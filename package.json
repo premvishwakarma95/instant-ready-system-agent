@@ -1,0 +1,31 @@
+{
+  "name": "mdr-carrier-representative-agent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Everly — MDR AI Carrier Representative (Vapi voice agent + orchestration service)",
+  "type": "module",
+  "scripts": {
+    "assistant:create": "tsx src/assistant/create.ts",
+    "db:reset": "tsx src/db/reset.ts",
+    "server:dev": "tsx watch src/server/index.ts",
+    "typecheck": "tsc --noEmit",
+    "prepare": "husky"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "express": "^4.21.2",
+    "mongoose": "^8.9.0",
+    "node-cron": "^4.6.0",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.10.2",
+    "husky": "^9.1.7",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

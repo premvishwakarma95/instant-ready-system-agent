@@ -1,0 +1,12 @@
+if git diff --cached --name-only | grep -Ex '\.env(\.[a-zA-Z]+)?' | grep -vx '\.env\.example'; then
+  echo "Blocked: .env is staged for commit. Never commit real credentials."
+  exit 1
+fi
+
+if git diff --cached -U0 | grep -E '^\+' | grep -Ei '(api[_-]?key|secret|token|password)\s*[:=]\s*[\"'\''A-Za-z0-9]' | grep -v '\.env\.example'; then
+  echo "Blocked: a staged line looks like it contains a secret (api key/token/password/secret)."
+  echo "If this is a false positive, review the diff and commit with --no-verify only if you're certain."
+  exit 1
+fi
+
+npm run typecheck
