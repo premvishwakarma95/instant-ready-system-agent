@@ -3,24 +3,29 @@
  * not-stopped carriers, freshly re-checks MDR and either skips the carrier
  * (per the rules below) or — if it's actually due, per attempt cadence and
  * calling window — PLACES A REAL OUTBOUND VAPI CALL. This has real-world
- * side effects: it rings an actual phone and costs money. Once the system
- * is ready this same endpoint is what a real scheduler (cron/interval) will
- * hit instead of a person calling it by hand — which is exactly why error
- * handling here is layered rather than a single top-level try/catch: one
- * bad carrier (malformed timezone, a transient MDR API failure, a DB
- * hiccup, a failed dial) must never take down the rest of the run for every
- * other carrier and load. Every failure is caught at the narrowest point it
- * can happen, logged with enough context to act on, and recorded as a
- * result entry — never silently swallowed, never left to crash the
- * process.
+ * side effects: it rings an actual phone and costs money. Error handling
+ * here is layered rather than a single top-level try/catch: one bad carrier
+ * (malformed timezone, a transient MDR API failure, a DB hiccup, a failed
+ * dial) must never take down the rest of the run for every other carrier and
+ * load. Every failure is caught at the narrowest point it can happen, logged
+ * with enough context to act on, and recorded as a result entry — never
+ * silently swallowed, never left to crash the process.
  *
- * Per load:
- *   1. Loop its carriers (local Carrier records already filtered to
- *      stop_call: false).
- *   2. For each, call MDR's real "Get Specific Carrier" endpoint fresh —
- *      local DB state can be stale by the time this runs.
- *      a. fresh.is_load_close === true  → stop processing this load
- *         entirely, mark it closed locally, move to the next load.
+ * processCarrier (below) has two callers, both exercising the exact same
+ * checks:
+ *   - processLoad, from this file's own POST /dispatch/run route (or the
+ *     — currently disabled — cron), looping every open Load's every
+ *     not-stopped Carrier.
+ *   - mdrWebhook.ts's POST /webhooks/mdr/capture route, calling it directly
+ *     for the single (load, carrier) pair a select.carrier.irs webhook just
+ *     delivered — the "instant" trigger this agent is actually built around,
+ *     with no queue and no separate cycle to wait for.
+ *
+ * Per carrier:
+ *   1. Call MDR's real "Get Select Carrier Details" endpoint fresh — local DB
+ *      state can be stale by the time this runs.
+ *      a. fresh.is_load_close === true → stop processing this load
+ *         entirely, mark it closed locally.
  *      b. fresh.carrier.stop_call === true → skip just this carrier.
  *      c. Otherwise → compute which attempt number is next (from existing
  *         CallAttempt records) and whether it's actually due yet, per the
@@ -31,7 +36,7 @@
  */
 import { Router } from "express";
 import { Load, Carrier, CallAttempt } from "../db/models/index.js";
-import { getSpecificCarrier } from "../mdr/api.js";
+import { getSelectCarrierDetails } from "../mdr/api.js";
 import { computeAttemptSchedule, MAX_CALL_ATTEMPTS } from "./cadence.js";
 import { isWithinCallingWindow, isValidTimezone } from "./callingWindow.js";
 import { buildCallVariables } from "./callVariables.js";
@@ -157,14 +162,19 @@ export async function processLoad(load: any, results: Result[], dryRun: boolean)
   }
 }
 
-/** Returns true if the load was found closed and the caller should stop processing it further. */
-async function processCarrier(load: any, carrier: any, results: Result[], dryRun: boolean): Promise<boolean> {
+/**
+ * Returns true if the load was found closed and the caller should stop
+ * processing it further. Exported so mdrWebhook.ts's /capture route can call
+ * this directly for the single carrier a select.carrier.irs webhook just
+ * told us about, instead of only ever running via processLoad's loop.
+ */
+export async function processCarrier(load: any, carrier: any, results: Result[], dryRun: boolean): Promise<boolean> {
   let fresh;
   try {
-    fresh = await getSpecificCarrier(load.id, carrier.carrier_id);
+    fresh = await getSelectCarrierDetails(load.id, carrier.carrier_id);
   } catch (err) {
     console.error(
-      `dispatch/run: MDR "Get Specific Carrier" call failed (load ${load.id}, carrier ${carrier.carrier_id}):`,
+      `dispatch/run: MDR "Get Select Carrier Details" call failed (load ${load.id}, carrier ${carrier.carrier_id}):`,
       err
     );
     results.push({
@@ -195,23 +205,34 @@ async function processCarrier(load: any, carrier: any, results: Result[], dryRun
     return true;
   }
 
-  // Quote threshold met (e.g. 3 quotes in) is its own stop condition,
-  // distinct from is_load_close — MDR may not flip is_load_close the
-  // instant the threshold is hit, so this can't be inferred from that flag
-  // alone. Re-checked fresh every run just like is_load_close, since
-  // nothing about it is cached locally.
-  if (fresh.response_summary?.threshold_reached) {
-    results.push({ loadId: load.id, outcome: "quote_threshold_reached_skipping_rest" });
-    return true;
-  }
+  // No quote-threshold stop condition here — unlike Everly's bid-follow-up
+  // flow (where many carriers compete to fill a quote count), this agent
+  // calls one already-selected carrier about one already-decided load; MDR's
+  // Select Carrier Carrier Details response has no threshold_reached field
+  // for this flow to even read.
 
-  // MDR can toggle agent calling off for a load independent of threshold/
-  // close status. === false (not a plain falsy check) so a missing/
+  // MDR can toggle agent calling off for a load independent of close
+  // status. === false (not a plain falsy check) so a missing/
   // undefined field — an older or partial MDR response — never gets
   // mistaken for "calling disabled" and blocks real carriers; only an
   // explicit false stops this load.
   if (fresh.response_summary?.is_agent_call_on === false) {
-    results.push({ loadId: load.id, outcome: "agent call is off right now" });
+    try {
+      await Load.updateOne({ id: load.id }, { is_agent_call_on: false });
+    } catch (err) {
+      // Same reasoning as the is_load_close persist above — the fact that
+      // calling is off matters more than our local write succeeding, so we
+      // still report it, but flag that the local record may now be stale
+      // until the next successful sync.
+      console.error(`dispatch/run: failed to persist is_agent_call_on for load ${load.id}:`, err);
+      results.push({
+        loadId: load.id,
+        outcome: "agent_call_off_local_update_failed",
+        error: (err as Error).message,
+      });
+      return true;
+    }
+    results.push({ loadId: load.id, outcome: "agent_call_off_skipping_rest" });
     return true;
   }
 
@@ -250,19 +271,14 @@ async function processCarrier(load: any, carrier: any, results: Result[], dryRun
     return false;
   }
 
+  // No email_sent_at validity check here — cadence.ts's computeAttemptSchedule
+  // never actually reads this value (dead even in the Everly build it came
+  // from, confirmed 2026-09-10: it's declared in that function's param type
+  // but not destructured/used in the body — a leftover from before the
+  // 30-minutes-after-email cadence was removed). Still constructed below
+  // since computeAttemptSchedule's signature requires a Date, but its actual
+  // value is never read.
   const emailSentAt = new Date(fresh.carrier.email_sent_at);
-  if (Number.isNaN(emailSentAt.getTime())) {
-    console.error(
-      `dispatch/run: invalid/missing email_sent_at "${fresh.carrier.email_sent_at}" (load ${load.id}, outreach_id ${carrier.outreach_id})`
-    );
-    results.push({
-      loadId: load.id,
-      outreachId: carrier.outreach_id,
-      outcome: "invalid_email_sent_at",
-      email_sent_at: fresh.carrier.email_sent_at,
-    });
-    return false;
-  }
 
   let existingAttempts;
   try {
@@ -355,9 +371,9 @@ async function processCarrier(load: any, carrier: any, results: Result[], dryRun
   }
 
   if (dryRun) {
-    // Every check above (threshold, stop_call, timezone, email_sent_at,
-    // attempt count, cadence due-time, calling window, phone/config
-    // presence) has already run for real — this is the one point where a
+    // Every check above (stop_call, timezone, attempt count, cadence
+    // due-time, calling window, phone/config presence) has already run for
+    // real — this is the one point where a
     // live run would create a CallAttempt and dial. Report what would have
     // happened instead, with zero DB writes and no Vapi call.
     results.push({

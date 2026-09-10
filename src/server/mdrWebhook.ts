@@ -1,36 +1,48 @@
 /**
- * Receiver for MDR's real push webhook. Still raw-capturing everything as-is
- * into WebhookResponse (unchanged — kept as the safety net so no traffic is
- * ever lost, even if the structured extraction below has a bug or MDR
- * changes the shape). On top of that:
+ * Receiver for MDR's real push webhook — event select.carrier.irs. Still
+ * raw-capturing everything as-is into WebhookResponse first (unchanged, kept
+ * as the safety net so no traffic is ever lost even if the structured
+ * extraction below has a bug or MDR changes the shape). On top of that:
  *  1. Extracts `load` and upserts a structured Load record — see
  *     src/db/models/Load.ts for why field names mirror MDR's payload
  *     exactly.
- *  2. Calls MDR's real "Get All Carriers" endpoint for that load and upserts
- *     each carrier — see src/db/models/Carrier.ts / src/mdr/api.ts.
+ *  2. Extracts `carrier` and upserts a structured Carrier record — same
+ *     field-mirroring approach, see src/db/models/Carrier.ts.
+ *  3. Immediately runs dispatch.ts's processCarrier() for this exact
+ *     (load, carrier) pair — see that function for the full fresh-check/dial
+ *     pipeline (re-fetch from MDR, stop_call/timezone/attempt-count/cadence/
+ *     calling-window checks, then place the Vapi call if everything passes).
+ *     This is what makes the agent "instant": Everly's build only ever runs
+ *     that logic from a separate /dispatch/run cycle (manual or cron)
+ *     scanning every open load; this one runs it right here, synchronously,
+ *     for the single carrier this webhook just told us about — no queue, no
+ *     waiting for a later cycle to pick it up.
+ *
+ * Unlike the old Everly-era version of this route, this payload already
+ * embeds the one selected carrier directly (rank, calling_window, contact
+ * info, etc.) — there's no separate "Get All Carriers" round-trip to MDR
+ * needed, since a load only ever has the single carrier MDR selected, not a
+ * bulk invited-carrier list. See a real captured example:
+ * WebhookResponse _id 6aa0034639806b5760db053e.
  *
  * Upsert (not insert) throughout, not blind create: MDR has been observed
- * sending the same load.posted webhook twice for the same load a couple
- * minutes apart (confirmed via real captured WebhookResponse data,
- * 2026-08-05) — a plain create() would produce duplicates.
+ * sending the same webhook twice for the same load a couple minutes apart in
+ * the old flow (confirmed via real captured WebhookResponse data,
+ * 2026-08-05) — a plain create() would produce duplicates. No reason to
+ * assume that's fixed on this new event just because it's a different one.
  *
- * Neither extraction step blocks the raw capture above or the 200 response
- * to MDR — the WebhookResponse write already succeeded by that point, and we
- * don't want MDR retrying indefinitely over a bug or a live-API hiccup on
- * our side.
+ * Neither extraction/dial step blocks the raw capture above or the 200
+ * response to MDR — the WebhookResponse write already succeeded by that
+ * point, and we don't want MDR retrying indefinitely over a bug on our side.
  *
  * Gated by the same x-api-key/TEST_DISPATCH_API_KEY shared secret as
  * POST /test/dispatch and POST /update-flags below (reused as-is, not a
  * separate key) — MDR's real signing/auth scheme for this webhook isn't
  * confirmed yet, so this shared secret is what MDR must send until then.
- *
- * The old /load-ready route (built against the previous mock-based
- * push-webhook design, fed only by the now-deleted src/mdr-simulator-ui/) has
- * been removed — MDR's real webhook posts here instead.
  */
 import { Router } from "express";
 import { Carrier, Load, WebhookResponse } from "../db/models/index.js";
-import { getAllCarriers } from "../mdr/api.js";
+import { processCarrier } from "./dispatch.js";
 
 export const mdrWebhookRouter = Router();
 
@@ -69,28 +81,43 @@ mdrWebhookRouter.post("/capture", async (req, res) => {
     return;
   }
 
+  const carrier = req.body?.carrier;
+  if (!carrier?.outreach_id) {
+    console.warn(`webhook capture: no carrier.outreach_id present for load ${load.id}, skipping Carrier extraction`);
+    return;
+  }
+
   try {
-    const { carriers } = await getAllCarriers(load.id);
-    // Bulk upsert, not one findOneAndUpdate per carrier: a load can have
-    // 100+ invited carriers, and firing that many concurrent round-trips at
-    // once doesn't scale (and can exhaust the connection pool). bulkWrite
-    // sends every carrier's upsert as a single command instead. Carrier.ts's
-    // schema has no `default:` fields, so dropping setDefaultsOnInsert (not
-    // available on bulkWrite) is a no-op change, not a behavior change.
-    if (carriers.length > 0) {
-      await Carrier.bulkWrite(
-        carriers.map((carrier) => ({
-          updateOne: {
-            filter: { outreach_id: carrier.outreach_id },
-            update: { $set: { ...carrier, load_id: load.id } },
-            upsert: true,
-          },
-        }))
-      );
-    }
-    console.log(`webhook capture: upserted ${carriers.length} carrier(s) for load ${load.id}`);
+    await Carrier.findOneAndUpdate(
+      { outreach_id: carrier.outreach_id },
+      { ...carrier, load_id: load.id },
+      { upsert: true, setDefaultsOnInsert: true }
+    );
+    console.log(`webhook capture: upserted carrier outreach_id ${carrier.outreach_id} for load ${load.id}`);
   } catch (err) {
-    console.error(`webhook capture: failed to fetch/upsert carriers for load ${load.id}:`, err);
+    console.error(
+      `webhook capture: failed to extract/upsert carrier outreach_id ${carrier.outreach_id} for load ${load.id}:`,
+      err
+    );
+    return;
+  }
+
+  // The "instant" part — place the call right now instead of waiting for a
+  // separate dispatch cycle to find this carrier later. processCarrier does
+  // its own fresh MDR re-check before ever dialing, so nothing here trusts
+  // the payload's carrier data as still being current by the time this runs.
+  const results: Record<string, unknown>[] = [];
+  try {
+    await processCarrier(load, carrier, results, false);
+    console.log(
+      `webhook capture: processCarrier result for load ${load.id}, outreach_id ${carrier.outreach_id}:`,
+      results
+    );
+  } catch (err) {
+    console.error(
+      `webhook capture: processCarrier threw unexpectedly for load ${load.id}, outreach_id ${carrier.outreach_id}:`,
+      err
+    );
   }
 });
 
@@ -116,60 +143,6 @@ mdrWebhookRouter.post("/capture", async (req, res) => {
  * Gated by the same x-api-key/TEST_DISPATCH_API_KEY shared secret as
  * POST /test/dispatch and /capture above (reused as-is, not a separate key).
  */
-/**
- * Receiver for MDR's new "Select Carrier" webhook (event: select.carrier.irs
- * — see the "Select Carrier Voice Agent API Specification" doc). This is the
- * IRS agent's own trigger — a single selected load+carrier, not the bulk
- * load-with-all-invited-carriers payload /capture above handles.
- *
- * Same raw-capture-first safety net as /capture, then extracts and upserts
- * Load only — deliberately does NOT cache the carrier into a local Carrier
- * record. MDR hands us a live `api.carrier_details` lookup
- * (GET /voice/select/load/{loadId}/carrier/{carrierId}) specifically so
- * carrier state (stop_call, accessorials, warehouses, etc.) is always fetched
- * fresh at call time — this flow calls the carrier immediately on webhook
- * receipt rather than queuing for a later dispatch cycle, so there's no
- * later moment a stale local cache would even be read from. Load still gets
- * cached, same as /capture — MDR has no live re-fetch equivalent for load
- * data the way it does for carrier data.
- *
- * Upsert (not blind create) for Load, same reasoning as /capture — nothing
- * yet confirms MDR won't redeliver this webhook, and idempotency is cheap
- * insurance either way.
- *
- * Gated by the same x-api-key/TEST_DISPATCH_API_KEY shared secret as every
- * other inbound MDR webhook in this app.
- */
-mdrWebhookRouter.post("/select-carrier", async (req, res) => {
-  const expectedKey = process.env.TEST_DISPATCH_API_KEY;
-  if (!expectedKey || req.header("x-api-key") !== expectedKey) {
-    res.status(401).json({ ok: false, error: "Missing or invalid x-api-key" });
-    return;
-  }
-
-  try {
-    await WebhookResponse.create({ timestamp: new Date(), data: req.body });
-  } catch (err) {
-    console.error("webhook select-carrier: failed to write raw WebhookResponse:", err);
-    res.status(500).json({ ok: false, error: "Failed to record webhook" });
-    return;
-  }
-
-  res.status(200).json({ ok: true });
-
-  const load = req.body?.load;
-  if (!load?.id) {
-    console.warn("webhook select-carrier: no load.id present, skipping Load extraction");
-    return;
-  }
-
-  try {
-    await Load.findOneAndUpdate({ id: load.id }, load, { upsert: true, setDefaultsOnInsert: true });
-  } catch (err) {
-    console.error(`webhook select-carrier: failed to extract/upsert Load ${load.id}:`, err);
-  }
-});
-
 const FLAG_UPDATE_EVENT = "load.flags_updated";
 
 mdrWebhookRouter.post("/update-flags", async (req, res) => {

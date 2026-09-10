@@ -118,9 +118,46 @@ export interface MdrGetSpecificCarrierResponse {
  * Fresh, single-carrier lookup — used immediately before deciding whether to
  * call, since load/carrier state can change between when the local queue was
  * built and now (threshold met, carrier opted out, load closed, etc.).
+ *
+ * This is Everly's bid-follow-up endpoint. Confirmed 404 (MDR's own "Not
+ * Found" HTML page, not JSON) when called for a select.carrier.irs load —
+ * this agent's own flow uses getSelectCarrierDetails below instead.
  */
 export function getSpecificCarrier(loadId: number, carrierId: number): Promise<MdrGetSpecificCarrierResponse> {
   return mdr.get<MdrGetSpecificCarrierResponse>(`/voice/load/${loadId}/carrier/${carrierId}`);
+}
+
+export interface MdrSelectResponseSummary {
+  carrier_id: number;
+  has_outreach: boolean;
+  outreach_status: string;
+  is_agent_call_on: boolean;
+  call_attempt_count: number;
+  last_call_result: string | null;
+}
+
+export interface MdrGetSelectCarrierDetailsResponse {
+  is_load_close: boolean;
+  response_summary: MdrSelectResponseSummary;
+  carrier: MdrCarrierDetail;
+}
+
+/**
+ * Fresh, single-carrier lookup for the IRS/Select Carrier flow — same
+ * purpose as getSpecificCarrier above (re-check before ever dialing, since
+ * local/webhook data can go stale), but a different endpoint and a different
+ * response_summary shape (has_outreach/outreach_status/call_attempt_count/
+ * last_call_result here, not threshold/total_carriers/responses_received/
+ * responses_remaining/threshold_reached). Confirmed against the URL a real
+ * select.carrier.irs webhook handed us directly in its own api.carrier_details
+ * field (WebhookResponse _id 6aa0034639806b5760db053e) — getSpecificCarrier's
+ * endpoint 404s for this flow's loads/carriers, this is the correct one.
+ */
+export function getSelectCarrierDetails(
+  loadId: number,
+  carrierId: number
+): Promise<MdrGetSelectCarrierDetailsResponse> {
+  return mdr.get<MdrGetSelectCarrierDetailsResponse>(`/voice/select/load/${loadId}/carrier/${carrierId}`);
 }
 
 export interface MdrActionResponse {
@@ -130,7 +167,7 @@ export interface MdrActionResponse {
 
 /** Doc 2.5 — use only when the carrier explicitly refuses this load. */
 export function declineCarrier(outreachId: number, reason: string): Promise<MdrActionResponse> {
-  return mdr.post<MdrActionResponse>("/voice/decline", { outreach_id: outreachId, reason });
+  return mdr.post<MdrActionResponse>("/voice/call-select-carrier-deny", { outreach_id: outreachId, reason });
 }
 
 /** Doc 2.6 — stop contacting this carrier (opted out, wrong number, blocked, invalid phone). */
@@ -253,7 +290,7 @@ function serializeAccTypes(accTypes: number[]): string {
  * confirmation before submitCallFinalResult.
  */
 export function submitCallResult(payload: MdrCallResultRequest): Promise<MdrCallResultResponse> {
-  return mdr.post<MdrCallResultResponse>("/voice/call-result", {
+  return mdr.post<MdrCallResultResponse>("/voice/call-select-carrier-result", {
     ...payload,
     acc_types: serializeAccTypes(payload.acc_types),
   });
@@ -269,7 +306,7 @@ export interface MdrCallFinalResultResponse {
 
 /** Doc 2.4 — call once, after the carrier explicitly confirms the calculated total. */
 export function submitCallFinalResult(payload: MdrCallFinalResultRequest): Promise<MdrCallFinalResultResponse> {
-  return mdr.post<MdrCallFinalResultResponse>("/voice/call-final-result", {
+  return mdr.post<MdrCallFinalResultResponse>("/voice/call-select-carrier-final-result", {
     ...payload,
     acc_types: serializeAccTypes(payload.acc_types),
   });
