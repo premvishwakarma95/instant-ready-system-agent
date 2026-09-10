@@ -116,6 +116,60 @@ mdrWebhookRouter.post("/capture", async (req, res) => {
  * Gated by the same x-api-key/TEST_DISPATCH_API_KEY shared secret as
  * POST /test/dispatch and /capture above (reused as-is, not a separate key).
  */
+/**
+ * Receiver for MDR's new "Select Carrier" webhook (event: select.carrier.irs
+ * — see the "Select Carrier Voice Agent API Specification" doc). This is the
+ * IRS agent's own trigger — a single selected load+carrier, not the bulk
+ * load-with-all-invited-carriers payload /capture above handles.
+ *
+ * Same raw-capture-first safety net as /capture, then extracts and upserts
+ * Load only — deliberately does NOT cache the carrier into a local Carrier
+ * record. MDR hands us a live `api.carrier_details` lookup
+ * (GET /voice/select/load/{loadId}/carrier/{carrierId}) specifically so
+ * carrier state (stop_call, accessorials, warehouses, etc.) is always fetched
+ * fresh at call time — this flow calls the carrier immediately on webhook
+ * receipt rather than queuing for a later dispatch cycle, so there's no
+ * later moment a stale local cache would even be read from. Load still gets
+ * cached, same as /capture — MDR has no live re-fetch equivalent for load
+ * data the way it does for carrier data.
+ *
+ * Upsert (not blind create) for Load, same reasoning as /capture — nothing
+ * yet confirms MDR won't redeliver this webhook, and idempotency is cheap
+ * insurance either way.
+ *
+ * Gated by the same x-api-key/TEST_DISPATCH_API_KEY shared secret as every
+ * other inbound MDR webhook in this app.
+ */
+mdrWebhookRouter.post("/select-carrier", async (req, res) => {
+  const expectedKey = process.env.TEST_DISPATCH_API_KEY;
+  if (!expectedKey || req.header("x-api-key") !== expectedKey) {
+    res.status(401).json({ ok: false, error: "Missing or invalid x-api-key" });
+    return;
+  }
+
+  try {
+    await WebhookResponse.create({ timestamp: new Date(), data: req.body });
+  } catch (err) {
+    console.error("webhook select-carrier: failed to write raw WebhookResponse:", err);
+    res.status(500).json({ ok: false, error: "Failed to record webhook" });
+    return;
+  }
+
+  res.status(200).json({ ok: true });
+
+  const load = req.body?.load;
+  if (!load?.id) {
+    console.warn("webhook select-carrier: no load.id present, skipping Load extraction");
+    return;
+  }
+
+  try {
+    await Load.findOneAndUpdate({ id: load.id }, load, { upsert: true, setDefaultsOnInsert: true });
+  } catch (err) {
+    console.error(`webhook select-carrier: failed to extract/upsert Load ${load.id}:`, err);
+  }
+});
+
 const FLAG_UPDATE_EVENT = "load.flags_updated";
 
 mdrWebhookRouter.post("/update-flags", async (req, res) => {

@@ -31,6 +31,7 @@ import {
   submitCallLog as mdrSubmitCallLog,
 } from "../mdr/api.js";
 import { ORCHESTRATION_WEBHOOK_URL } from "../assistant/tools.js";
+import { getCallPrice } from "../twilio/calls.js";
 import type { HydratedDocument } from "mongoose";
 
 /**
@@ -493,6 +494,28 @@ export async function handleEndOfCallReport(message: any) {
     vapiEndedAt: message.endedAt,
   });
 
+  // Vapi's own cost is already final and present right here on the webhook
+  // payload — no extra fetch needed (confirmed against Vapi's real
+  // ServerMessageEndOfCallReport schema, 2026-09-09).
+  attempt.vapiCost = message.cost;
+
+  // Twilio's cost is a best-effort, one-shot synchronous attempt — see
+  // CallAttempt.ts's field comment: this is commonly still null at this
+  // point (Twilio's own billing settles on its own schedule, not always
+  // within seconds), and that's expected, not an error. No retry/backfill
+  // exists yet for the calls that come back null here.
+  const twilioCallSid = message.call?.transport?.callSid;
+  if (twilioCallSid) {
+    attempt.twilioCallSid = twilioCallSid;
+    try {
+      attempt.twilioCost = (await getCallPrice(twilioCallSid)) ?? undefined;
+    } catch (err) {
+      console.error(`end-of-call-report: failed to fetch Twilio price for call ${twilioCallSid}:`, err);
+    }
+  } else {
+    console.warn(`end-of-call-report: no Twilio callSid found on message.call.transport for vapiCallId ${vapiCallId}`);
+  }
+
   await attempt.save();
 
   // MDR's Call Log API (spec received 2026-08-27) — logs ended calls to
@@ -531,6 +554,16 @@ export async function handleEndOfCallReport(message: any) {
             provider: "vapi",
             call_result: attempt.callResult,
             ended_reason: attempt.endedReason,
+            // twilio_cost is commonly null/absent here — Twilio's own price
+            // isn't reliably available by end-of-call-report time (see
+            // CallAttempt.ts's field comment). No backfill push exists yet
+            // for calls where it resolves later.
+            vapi_cost: attempt.vapiCost,
+            twilio_cost: attempt.twilioCost,
+            total_cost:
+              typeof attempt.vapiCost === "number" && typeof attempt.twilioCost === "number"
+                ? attempt.vapiCost + attempt.twilioCost
+                : undefined,
           },
         });
         attempt.mdrCallLogSubmittedAt = new Date();

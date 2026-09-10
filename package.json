@@ -1,5 +1,5 @@
 {
-  "name": "mdr-carrier-representative-agent",
+  "name": "irs-agent",
   "version": "0.1.0",
   "private": true,
   "description": "Everly — MDR AI Carrier Representative (Vapi voice agent + orchestration service)",
