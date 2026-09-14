@@ -4,7 +4,6 @@ import { connectDB } from "../db/connection.js";
 import { handleToolCalls, handleEndOfCallReport } from "./webhookHandlers.js";
 import { mdrWebhookRouter } from "./mdrWebhook.js";
 import { dispatchRouter, runDispatchCycle } from "./dispatch.js";
-import { testDispatchRouter } from "./testDispatch.js";
 import { recordingsRouter } from "./recordings.js";
 
 // Last-resort safety net: every route handler in this codebase is already
@@ -30,7 +29,6 @@ app.use(express.json({ limit: "10mb" }));
 
 app.use("/webhooks/mdr", mdrWebhookRouter);
 app.use("/dispatch", dispatchRouter);
-app.use("/test", testDispatchRouter);
 app.use("/recordings", recordingsRouter);
 
 app.post("/vapi/tool-calls", async (req, res) => {

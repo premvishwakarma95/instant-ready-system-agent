@@ -36,9 +36,9 @@
  * point, and we don't want MDR retrying indefinitely over a bug on our side.
  *
  * Gated by the same x-api-key/TEST_DISPATCH_API_KEY shared secret as
- * POST /test/dispatch and POST /update-flags below (reused as-is, not a
- * separate key) — MDR's real signing/auth scheme for this webhook isn't
- * confirmed yet, so this shared secret is what MDR must send until then.
+ * POST /update-flags below (reused as-is, not a separate key) — MDR's real
+ * signing/auth scheme for this webhook isn't confirmed yet, so this shared
+ * secret is what MDR must send until then.
  */
 import { Router } from "express";
 import { Carrier, Load, WebhookResponse } from "../db/models/index.js";
@@ -141,7 +141,7 @@ mdrWebhookRouter.post("/capture", async (req, res) => {
  * everything else already known about the load.
  *
  * Gated by the same x-api-key/TEST_DISPATCH_API_KEY shared secret as
- * POST /test/dispatch and /capture above (reused as-is, not a separate key).
+ * /capture above (reused as-is, not a separate key).
  */
 const FLAG_UPDATE_EVENT = "load.flags_updated";
 
