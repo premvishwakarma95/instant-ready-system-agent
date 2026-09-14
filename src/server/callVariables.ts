@@ -180,8 +180,8 @@ function renderKnownAccessorials(items: Array<{ id: number; name: string; price:
 export function buildCallVariables(
   load: any,
   carrier: MdrCarrierDetail,
-  callMemory: string = "",
-  isFinalAttempt: boolean = false
+  isFinalAttempt: boolean = false,
+  knownContactName?: string
 ) {
   // dispatch.ts already validates carrier_timezone before ever placing this
   // call (see its isValidTimezone gate), so this fallback is defensive-only —
@@ -194,11 +194,11 @@ export function buildCallVariables(
     ? formatCurrentTime(carrier.carrier_timezone)
     : "unknown";
 
-  // Rendered as a complete statement, same reasoning as callMemory above —
-  // Vapi substitutes {{attemptStatus}} as literal text, so a bare boolean
-  // would leave the model to guess at phrasing. See prompt.ts's "Attempt
-  // status" section and the schedule_callback final-attempt rule that reads
-  // it — computed by dispatch.ts from nextAttemptNumber === MAX_CALL_ATTEMPTS.
+  // Rendered as a complete statement — Vapi substitutes {{attemptStatus}} as
+  // literal text, so a bare boolean would leave the model to guess at
+  // phrasing. See prompt.ts's "Attempt status" section and the
+  // schedule_callback final-attempt rule that reads it — computed by
+  // dispatch.ts from nextAttemptNumber === MAX_CALL_ATTEMPTS.
   const attemptStatus = isFinalAttempt
     ? "This is the final allowed call to this carrier for this load — no further automated attempts will happen after this one."
     : "This is not the final allowed attempt — further automated attempts remain if needed.";
@@ -243,15 +243,24 @@ export function buildCallVariables(
     currentTime,
     greeting,
 
-    // Populated by src/server/callMemory.ts, computed by dispatch.ts before
-    // calling this function (requires an async DB lookup this function
-    // deliberately doesn't do itself — see callMemory.ts's header comment).
-    // Vapi substitutes {{callMemory}} as literal text before the model ever
-    // sees the prompt — an empty string there would leave a dangling
-    // fragment mid-sentence, not a value the model can branch on. Always
-    // render a complete, unambiguous statement instead.
-    callMemory: callMemory || "No prior contact — this is the first call to this carrier for this load.",
     attemptStatus,
+
+    // Populated by contactMemory.ts, computed by dispatch.ts before calling
+    // this function. Empty string (not "unknown") when there's no known
+    // contact — the Opening section in prompt.ts branches on whether this
+    // is empty, and a real name should never be substituted with the word
+    // "unknown" if this ever ends up spoken by mistake.
+    knownContactName: knownContactName ?? "",
+    // MDR's own on-file contact name for this carrier (carrier.contact_name)
+    // — separate from knownContactName above, which only ever comes from a
+    // name WE confirmed by actually talking to someone (see
+    // contactMemory.ts). This MDR field may be a placeholder/company-level
+    // value, may be stale, and does not by itself make a contact "known"
+    // (that still requires knownContactName). Exposed only as a secondary
+    // reference signal for the Opening section below to weigh when judging
+    // whether a heard name sounds right, never as a substitute for actually
+    // asking and confirming on a first-ever call.
+    mdrContactName: fallback(carrier.contact_name, ""),
 
     carrierName: fallback(carrier.company_name),
     carrierEmail: fallback(carrier.email),

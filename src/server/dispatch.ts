@@ -40,9 +40,9 @@ import { getSelectCarrierDetails } from "../mdr/api.js";
 import { computeAttemptSchedule, MAX_CALL_ATTEMPTS } from "./cadence.js";
 import { isWithinCallingWindow, isValidTimezone } from "./callingWindow.js";
 import { buildCallVariables } from "./callVariables.js";
-import { buildCallMemory, hasMeaningfulPriorContact } from "./callMemory.js";
+import { getKnownContact } from "./contactMemory.js";
 import { createOutboundCall } from "../vapi/calls.js";
-import { FIRST_MESSAGE, FOLLOW_UP_FIRST_MESSAGE, FOLLOW_UP_UNANSWERED_FIRST_MESSAGE } from "../assistant/prompt.js";
+import { FIRST_MESSAGE, KNOWN_CONTACT_FIRST_MESSAGE } from "../assistant/prompt.js";
 import { env } from "../config/env.js";
 
 export const dispatchRouter = Router();
@@ -438,28 +438,25 @@ export async function processCarrier(load: any, carrier: any, results: Result[],
 
   try {
     // Cross-load: keyed on MDR's stable carrier_id, not outreach_id (which
-    // is per-load-invitation) — see callMemory.ts's header comment. This is
-    // deliberately separate from existingAttempts above, which stays scoped
-    // to (load, outreach_id) since cadence/MAX_CALL_ATTEMPTS are inherently
-    // per-load concepts, not something to share across different loads.
-    // attempt._id is excluded from both lookups — the attempt created just
-    // above already exists in the DB at this point (in_progress, no
-    // callResult yet), and without excluding it a genuinely first-ever call
-    // would see its own not-yet-happened attempt reflected back as "prior
-    // history" (a real bug caught via a live call, 2026-08-12).
-    const callMemory = await buildCallMemory(fresh.carrier.carrier_id, String(load.id), attempt._id);
-    const variableValues = buildCallVariables(load, fresh.carrier, callMemory, nextAttemptNumber === MAX_CALL_ATTEMPTS);
-    const firstMessage = callMemory
-      ? (await hasMeaningfulPriorContact(fresh.carrier.carrier_id, attempt._id))
-        ? FOLLOW_UP_FIRST_MESSAGE
-        : FOLLOW_UP_UNANSWERED_FIRST_MESSAGE
-      : FIRST_MESSAGE;
+    // is per-load-invitation) — see contactMemory.ts's header comment.
+    // attempt._id is excluded so the attempt just created above (in_progress,
+    // no confirmedContactName yet) never gets read back as its own "known
+    // contact" on a genuinely first-ever call to this carrier.
+    const knownContact = await getKnownContact(fresh.carrier.carrier_id, attempt._id);
+    const variableValues = buildCallVariables(
+      load,
+      fresh.carrier,
+      nextAttemptNumber === MAX_CALL_ATTEMPTS,
+      knownContact?.name
+    );
+    const firstMessage = knownContact ? KNOWN_CONTACT_FIRST_MESSAGE : FIRST_MESSAGE;
     const call = await createOutboundCall({
       assistantId: process.env.EVERLY_ASSISTANT_ID as string,
       phoneNumberId: env.vapiPhoneNumberId,
       customerNumber: phone,
       variableValues,
       firstMessage,
+      knownContactName: knownContact?.name,
     });
 
     attempt.vapiCallId = call.id;

@@ -117,6 +117,8 @@ export function mapToMdrCallLogStatus(attempt: HydratedDocument<any>): import(".
       return "FOLLOW_UP_REQUIRED";
     case "email_requested":
       return "EMAIL_REQUESTED";
+    case "wrong_contact":
+      return "WRONG_CONTACT";
     case "connected":
       return "CALL_DROPPED";
     default:

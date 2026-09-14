@@ -176,6 +176,47 @@ export const TOOLS = [
   {
     type: "function" as const,
     function: {
+      name: "confirm_contact",
+      description:
+        "Call once, immediately, the moment you've confirmed exactly who the correct " +
+        "pricing/dispatch contact is — see Opening in the system prompt for when this happens in " +
+        "each case (known contact confirmed, a new name given for an unknown contact, or a known " +
+        "contact corrected to someone new). This is what lets a future call — even for a " +
+        "different load — ask for this person by name instead of the generic role question, and " +
+        "it's what updates MDR's own carrier record. Do not call this just because a name was " +
+        "mentioned in passing; only when it's actually confirmed as the right contact.",
+      parameters: {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "the confirmed contact's first name (or full name if given)" },
+          phone: {
+            type: "string",
+            description:
+              "the contact's phone number, only if they actually stated one on this call — omit " +
+              "otherwise, never invent one. Do not ask about or capture an extension — a plain phone number " +
+              "only; MDR handles extensions on their own side. Capture exactly the digits they said, in the " +
+              "order they said them — " +
+              "never add a country code (e.g. +1, +91) unless they actually spoke it themselves; do not guess or " +
+              "normalize one on your own, even if it seems like the obvious default.",
+          },
+          contactOnThisCall: {
+            type: "boolean",
+            description:
+              "true if this confirmed contact is the person you are actually speaking with right now on " +
+              "this call. false only when the name (and phone) belongs to someone else entirely who is NOT " +
+              "on this call — e.g. a colleague or manager named as the real pricing/dispatch contact. This " +
+              "determines whether the call gets reported to MDR as having reached the wrong contact, so " +
+              "answer it accurately every time.",
+          },
+        },
+        required: ["name", "contactOnThisCall"],
+      },
+    },
+    server: { url: ORCHESTRATION_WEBHOOK_URL },
+  },
+  {
+    type: "function" as const,
+    function: {
       name: "record_do_not_call",
       description:
         "Record an opt-out immediately when a carrier asks not to be called again. Call this " +

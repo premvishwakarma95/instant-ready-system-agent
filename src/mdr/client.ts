@@ -64,7 +64,64 @@ async function request<T>(
   return data as T;
 }
 
+/**
+ * Separate from request() above on purpose: that helper always sends JSON
+ * (Content-Type: application/json, JSON.stringify'd body) — every existing
+ * MDR endpoint expects that. update-carrier-detail is the one exception,
+ * confirmed to take multipart/form-data (see its curl example), so this
+ * builds a real FormData body instead. Never reuse this for a JSON
+ * endpoint, and never make request() itself form-data-aware — that would
+ * risk every other already-working MDR call for the sake of this one.
+ */
+async function requestForm<T>(path: string, fields: Record<string, string>): Promise<T> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
+  const form = new FormData();
+  for (const [key, value] of Object.entries(fields)) {
+    form.append(key, value);
+  }
+
+  let res: Response;
+  try {
+    res = await fetch(`${MDR_API_BASE_URL}${path}`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${process.env.MDR_API_KEY ?? ""}`,
+        // No Content-Type set here — fetch derives the correct
+        // multipart/form-data boundary itself from the FormData body; a
+        // manually-set Content-Type would be missing that boundary and
+        // break the request.
+      },
+      body: form,
+      signal: controller.signal,
+    });
+  } catch (err) {
+    if ((err as Error).name === "AbortError") {
+      throw new Error(`MDR API request timed out after ${REQUEST_TIMEOUT_MS}ms: POST ${path}`);
+    }
+    throw new Error(`MDR API request failed: POST ${path} — ${(err as Error).message}`);
+  } finally {
+    clearTimeout(timeout);
+  }
+
+  const text = await res.text();
+  let data: unknown;
+  try {
+    data = text ? JSON.parse(text) : undefined;
+  } catch {
+    throw new MdrApiError(res.status, { nonJsonBody: text.slice(0, 500) });
+  }
+
+  if (!res.ok) {
+    throw new MdrApiError(res.status, data);
+  }
+
+  return data as T;
+}
+
 export const mdr = {
   get: <T>(path: string) => request<T>("GET", path),
   post: <T>(path: string, body?: unknown) => request<T>("POST", path, body),
+  postForm: <T>(path: string, fields: Record<string, string>) => requestForm<T>(path, fields),
 };

@@ -29,6 +29,7 @@ import {
   submitCallResult as mdrSubmitCallResult,
   submitCallFinalResult as mdrSubmitCallFinalResult,
   submitCallLog as mdrSubmitCallLog,
+  updateCarrierDetail as mdrUpdateCarrierDetail,
 } from "../mdr/api.js";
 import { ORCHESTRATION_WEBHOOK_URL } from "../assistant/tools.js";
 import { getCallPrice } from "../twilio/calls.js";
@@ -94,6 +95,8 @@ async function dispatchTool(name: string, params: Record<string, any>, context: 
       return calculateQuote(params, context);
     case "submit_quote":
       return submitQuote(params, context);
+    case "confirm_contact":
+      return confirmContact(params, context);
     case "log_decline":
       return logDecline(params, context);
     case "schedule_callback":
@@ -277,6 +280,47 @@ async function submitQuote(params: any, { attempt }: CallContext) {
   }
 
   return { ok: true, mdrSync: "ok", quoteId: localQuote.id };
+}
+
+async function confirmContact(params: any, { attempt }: CallContext) {
+  // Local write first — durable regardless of MDR's API being reachable,
+  // same pattern as every other tool here (e.g. log_decline). This is also
+  // what contactMemory.ts's cross-load lookup actually reads from, since
+  // MDR's own copy doesn't come back through getSelectCarrierDetails (see
+  // CallAttempt.ts's field comment) — so this save is the real record, not
+  // just an audit trail.
+  attempt.confirmedContactName = params.name;
+  if (params.phone) attempt.confirmedContactPhone = params.phone;
+  // contactOnThisCall === false means whoever answered isn't the
+  // drayage-pricing contact and the real one isn't reachable on this call —
+  // this call never actually reached the right person, so it reports to
+  // MDR's call-log as WRONG_CONTACT (see mapToMdrCallLogStatus) instead of
+  // falling through applyCallOutcome's "connected" fallback to CALL_DROPPED.
+  if (params.contactOnThisCall === false) attempt.callResult = "wrong_contact";
+  await attempt.save();
+
+  let mdrSync: "ok" | "failed" = "ok";
+  try {
+    await mdrUpdateCarrierDetail(Number(attempt.outreachId), params.name, params.phone ?? "");
+  } catch (err) {
+    console.error(`confirm_contact: MDR update-carrier-detail write-back failed for outreach ${attempt.outreachId}:`, err);
+    mdrSync = "failed";
+  }
+
+  // Keep our own local Carrier mirror in sync too — it's a separate record
+  // from CallAttempt.confirmedContactName above (that one backs the
+  // cross-load "known contact" lookup; this one is the plain per-outreach
+  // mirror of MDR's carrier fields). Best-effort, same as log_decline's
+  // local Carrier.stop_call update — doesn't affect this tool's own success.
+  try {
+    const carrierUpdate: Record<string, string> = { contact_name: params.name };
+    if (params.phone) carrierUpdate.phone = params.phone;
+    await Carrier.updateOne({ outreach_id: Number(attempt.outreachId) }, carrierUpdate);
+  } catch (err) {
+    console.error(`confirm_contact: failed to update local Carrier.contact_name for outreach ${attempt.outreachId}:`, err);
+  }
+
+  return { ok: true, mdrSync };
 }
 
 async function logDecline(params: any, { attempt }: CallContext) {

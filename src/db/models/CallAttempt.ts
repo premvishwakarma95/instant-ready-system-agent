@@ -13,14 +13,14 @@ const callAttemptSchema = new Schema(
     // have we attempted THIS invitation" is inherently per-load.
     outreachId: { type: String, required: true, index: true },
     // carrier_id: MDR's stable per-company id — the SAME value across every
-    // load a real carrier is ever invited to. Used by callMemory.ts to find
-    // this carrier's history across loads, not just this one. Was previously
-    // (incorrectly) not stored at all, with outreach_id stored under this
-    // field name instead — a real carrier calling back after a genuinely
-    // fresh first contact would see its own in-progress attempt reflected
-    // back as "prior history" once the cross-load lookup had to reconstruct
-    // carrier_id indirectly; storing it directly here avoids that class of
-    // bug entirely. See callMemory.ts's header comment.
+    // load a real carrier is ever invited to. Used by contactMemory.ts to
+    // find this carrier's confirmed contact across loads, not just this one.
+    // Was previously (incorrectly) not stored at all, with outreach_id
+    // stored under this field name instead — a real carrier calling back
+    // after a genuinely fresh first contact would see its own in-progress
+    // attempt reflected back as "prior history" once a cross-load lookup had
+    // to reconstruct carrier_id indirectly; storing it directly here avoids
+    // that class of bug entirely. See contactMemory.ts's header comment.
     carrierId: { type: String, required: true, index: true },
     attemptNumber: { type: Number, required: true }, // 1-4 per the confirmed cadence
 
@@ -62,6 +62,15 @@ const callAttemptSchema = new Schema(
         // EMAIL_REQUESTED call-log status accurately (see callOutcome.ts's
         // mapToMdrCallLogStatus).
         "email_requested",
+        // Set by confirm_contact when contactOnThisCall is false — the
+        // person who answered isn't who handles drayage pricing, and the
+        // real contact they named isn't reachable on this call. Distinct
+        // from wrong_number (the dialed phone number itself was wrong) —
+        // here the number was right, just not the right person. Without
+        // this, the call falls through applyCallOutcome's "connected"
+        // fallback and reports MDR's call-log as CALL_DROPPED instead of
+        // WRONG_CONTACT.
+        "wrong_contact",
       ],
     },
 
@@ -81,6 +90,20 @@ const callAttemptSchema = new Schema(
     declineNote: String,
     callbackAt: Date,
     callbackTimeZone: String,
+
+    // Set by the confirm_contact tool webhook, the moment Everly confirms
+    // she's speaking with (or has just been given) the correct
+    // pricing/dispatch contact (see prompt.ts's "Opening — correct
+    // contact"). Read back cross-load by contactMemory.ts's carrierId-scoped
+    // lookup so a future call — even for a different load — can ask for
+    // this person directly instead of the generic role-based question. Also
+    // pushed to MDR's own update-carrier-detail endpoint, but that write
+    // does NOT come back through getSelectCarrierDetails/getSpecificCarrier
+    // (confirmed empirically in the sibling Carrier-Representative-Agent
+    // project, 2026-09-11), so this local copy is the only place "known
+    // contact" is actually read from, not MDR's own data.
+    confirmedContactName: String,
+    confirmedContactPhone: String,
 
     // Per-call cost, captured at end-of-call-report time (see
     // webhookHandlers.ts). vapiCost comes straight off Vapi's own webhook
@@ -125,11 +148,15 @@ const callAttemptSchema = new Schema(
 // per-load-invitation concept (see the field comments above).
 callAttemptSchema.index({ loadId: 1, outreachId: 1, attemptNumber: 1 }, { unique: true });
 
-// Backs callMemory.ts's cross-load history lookup (filter by carrierId,
-// sort by startedAt desc, limited) — without this, MongoDB has to gather
+// Backs contactMemory.ts's cross-load "known contact" lookup (filter by
+// carrierId, sort by createdAt desc) — without this, MongoDB has to gather
 // and sort every attempt this real carrier has ever had before it can hand
-// back just the most recent few, even though the app only ever asks for a
-// bounded slice. This lets it walk the index in the needed order directly.
-callAttemptSchema.index({ carrierId: 1, startedAt: -1 });
+// back just the most recent confirmed contact. Sorted on createdAt, not
+// startedAt — startedAt is set by dispatch.ts at dial time and can
+// legitimately be backdated for cadence/testing purposes, which would
+// otherwise let an older confirmation outrank a genuinely later one.
+// createdAt (Mongoose's own insertion timestamp) reflects true insertion
+// order and is never touched by anything else in this codebase.
+callAttemptSchema.index({ carrierId: 1, createdAt: -1 });
 
 export const CallAttempt = model("CallAttempt", callAttemptSchema);

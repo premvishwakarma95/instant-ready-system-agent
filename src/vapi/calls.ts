@@ -10,6 +10,15 @@ export async function createOutboundCall(params: {
   // itself (not just what the LLM says after it) reflects that. Omit for
   // the assistant's default (every first-time call).
   firstMessage?: string;
+  // The confirmed contact name on file for this carrier (contactMemory.ts's
+  // getKnownContact), if any — passed straight through to Deepgram as a
+  // nova-3 keyterm boost so THIS specific name transcribes more reliably if
+  // the same contact says it again on this call. Deliberately per-call and
+  // dynamic, not a static list — we have no fixed set of expected names to
+  // pre-register, only ever the one specific name we already have on file
+  // for this one carrier. Omit when there's no known contact yet (first-time
+  // calls have nothing to boost toward).
+  knownContactName?: string;
 }) {
   return vapi.post<{ id: string }>("/call", {
     assistantId: params.assistantId,
@@ -18,6 +27,16 @@ export async function createOutboundCall(params: {
     assistantOverrides: {
       variableValues: params.variableValues,
       ...(params.firstMessage ? { firstMessage: params.firstMessage } : {}),
+      ...(params.knownContactName
+        ? {
+            transcriber: {
+              provider: "deepgram",
+              model: "nova-3",
+              language: "en",
+              keyterm: [params.knownContactName],
+            },
+          }
+        : {}),
     },
   });
 }

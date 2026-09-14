@@ -180,6 +180,25 @@ export function resendInvitationEmail(outreachId: number): Promise<MdrActionResp
   return mdr.post<MdrActionResponse>("/voice/email-resend", { outreach_id: outreachId });
 }
 
+/**
+ * Updates MDR's own confirmed pricing/dispatch contact for this outreach
+ * (client-provided endpoint, ported from the sibling Carrier-Representative-
+ * Agent project, 2026-09-11) — form-data, not JSON, see client.ts's
+ * postForm. phone is optional; MDR's own example sends it as an empty
+ * string when unknown rather than omitting the field. Same endpoint as the
+ * sibling project's bid-follow-up flow — not one of the "select carrier"
+ * variants (unlike declineCarrier/submitCallResult/submitCallFinalResult
+ * above), since this agent's carrier-contact record is the same shape MDR
+ * exposes generically, not scoped to the select-carrier flow.
+ */
+export function updateCarrierDetail(outreachId: number, name: string, phone: string = ""): Promise<MdrActionResponse> {
+  return mdr.postForm<MdrActionResponse>("/voice/update-carrier-detail", {
+    outreach_id: String(outreachId),
+    name,
+    phone,
+  });
+}
+
 export interface MdrAddAccessorialResponse {
   success: boolean;
   accessorials: MdrAccessorial;
@@ -312,12 +331,15 @@ export function submitCallFinalResult(payload: MdrCallFinalResultRequest): Promi
  * received 2026-08-27) plus CALL_DROPPED, added 2026-08-31 per explicit
  * instruction to cover a connected call the carrier hung up on before
  * reaching any conclusive outcome — confirmed on a real test call, MDR's
- * original 6 values had no honest equivalent for that case. Mapped from our
+ * original 6 values had no honest equivalent for that case, plus
+ * WRONG_CONTACT — the carrier who answered isn't who handles drayage
+ * pricing and the real contact they named isn't reachable on this call
+ * (see confirm_contact's contactOnThisCall in tools.ts). Mapped from our
  * CallAttempt.status/callResult in callOutcome.ts's mapToMdrCallLogStatus,
  * which still returns null (skip the push entirely) for outcomes that
- * remain a poor fit even with CALL_DROPPED available (do_not_call, failed,
- * wrong_number) rather than force one of these 7 onto something that
- * doesn't fit.
+ * remain a poor fit even with these values available (do_not_call, failed,
+ * wrong_number) rather than force one of these onto something that doesn't
+ * fit.
  */
 export type MdrCallLogStatus =
   | "NO_ANSWER"
@@ -326,7 +348,8 @@ export type MdrCallLogStatus =
   | "EMAIL_REQUESTED"
   | "ACCEPTED"
   | "DECLINED"
-  | "CALL_DROPPED";
+  | "CALL_DROPPED"
+  | "WRONG_CONTACT";
 
 export interface MdrCallLogRequest {
   outreach_id: number;
