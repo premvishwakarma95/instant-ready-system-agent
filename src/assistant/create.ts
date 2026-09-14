@@ -88,7 +88,10 @@ import { TOOLS, ORCHESTRATION_WEBHOOK_URL } from "./tools.js";
 // just a check-in with no consequence, and the actual hang-up threshold sits
 // well past a normal pause (checking a rate, etc.).
 const assistantPayload = {
-  name: "Everly",
+  // Dashboard label only — distinguishes this from the Carrier-Representative-
+  // Agent's own "Everly" assistant in the same Vapi account. Not spoken on
+  // calls; the persona's spoken name still comes from prompt.ts.
+  name: "Everly-(IRS)",
   firstMessage: "",
   firstMessageMode: "assistant-waits-for-user",
   silenceTimeoutSeconds: 60,
