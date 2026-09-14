@@ -34,8 +34,6 @@ const quoteSchema = new Schema(
     isWarehouse: Number, // 0 or 1, matches MDR's own representation
     storageRate: Number,
     warehouseId: Number,
-    rateValidUntil: String,
-    driverAvailable: String,
     details: String,
     allIn: Number, // 0 or 1 — derived from whether accTypes is empty, not asked
 

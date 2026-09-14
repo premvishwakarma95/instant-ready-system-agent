@@ -86,12 +86,10 @@ const quoteFieldProperties = {
     type: "number",
     description: "only if this load needs storage — existing matched id or one newly registered via add_warehouse",
   },
-  rate_valid_until: { type: "string", description: "date, e.g. 2026-12-31" },
-  driver_available: { type: "string", description: "date, e.g. 2026-08-15" },
   details: { type: "string", description: "free-text notes, if any" },
 };
 
-const quoteFieldRequired = ["base_rate", "fsc", "acc_types", "is_warehouse", "rate_valid_until", "driver_available"];
+const quoteFieldRequired = ["base_rate", "fsc", "acc_types", "is_warehouse"];
 
 export const TOOLS = [
   {

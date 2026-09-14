@@ -157,8 +157,6 @@ function parseQuoteFields(params: any) {
     is_warehouse: toBinaryFlag(params.is_warehouse, "is_warehouse"),
     storage_rate: toOptionalNumber(params.storage_rate, "storage_rate"),
     warehouse_id: toOptionalNumber(params.warehouse_id, "warehouse_id"),
-    rate_valid_until: String(params.rate_valid_until ?? ""),
-    driver_available: String(params.driver_available ?? ""),
     details: params.details ? String(params.details) : undefined,
   };
 }
@@ -182,8 +180,6 @@ function buildLocalQuoteFields(fields: ParsedQuoteFields) {
     isWarehouse: fields.is_warehouse,
     storageRate: fields.storage_rate,
     warehouseId: fields.warehouse_id,
-    rateValidUntil: fields.rate_valid_until,
-    driverAvailable: fields.driver_available,
     details: fields.details,
   };
 }
@@ -195,7 +191,7 @@ async function calculateQuote(params: any, { attempt }: CallContext) {
   // that to Everly (who can re-ask/retry) than send bad data to MDR.
   const fields = parseQuoteFields(params);
   const result = await mdrSubmitCallResult(buildQuotePayload(Number(attempt.outreachId), fields));
-  const data = result.rate_calculation.original.data;
+  const data = result.rate_calculation;
 
   // Draft record, upserted per call attempt — durable proof of what was
   // calculated even if the carrier never confirms. submitQuote() below
@@ -521,10 +517,8 @@ export async function handleEndOfCallReport(message: any) {
   // MDR's Call Log API (spec received 2026-08-27) — logs ended calls to
   // MDR's own system, restricted to their fixed 6-value status vocabulary
   // (see mapToMdrCallLogStatus's header comment for what's covered and
-  // what's deliberately skipped). Fires for /test/dispatch calls too (same
-  // handleEndOfCallReport path, no special-casing) per explicit
-  // instruction. Best-effort: MDR's own logging is auxiliary, must never
-  // block or fail this webhook's own processing above.
+  // what's deliberately skipped). Best-effort: MDR's own logging is
+  // auxiliary, must never block or fail this webhook's own processing above.
   //
   // Guarded by mdrCallLogSubmittedAt so this only ever fires once per call —
   // this whole handler is fully awaited before responding 200 to Vapi, so a

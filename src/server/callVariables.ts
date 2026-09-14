@@ -300,12 +300,11 @@ export function buildCallVariables(
       storageDays,
       storagePallets,
     }),
-    targetRate: formatNumber(load.target_rate),
-    // Percentage, not a dollar figure — no thousands-separator formatting
-    // like targetRate above. MDR's own reference fuel surcharge for this
-    // load, stated to the carrier alongside targetRate per client direction
-    // (2026-08-31) — see prompt.ts's "Load details for this call" section.
-    fsc: fallback(load.fsc),
+    // No targetRate/fsc variable here — this agent never discloses MDR's
+    // reference target rate/fuel surcharge to the carrier (per client
+    // direction, 2026-09-12), and the assistant can't leak what it was never
+    // given in the first place. See prompt.ts's "What is the target rate?"
+    // objection handler for the spoken side of this.
 
     specialRequirements: fallback(load.notes, "none"),
 

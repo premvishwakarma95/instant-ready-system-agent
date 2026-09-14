@@ -220,8 +220,6 @@ export interface MdrCallResultRequest {
   is_warehouse: 0 | 1;
   storage_rate?: number;
   warehouse_id?: number;
-  rate_valid_until: string;
-  driver_available: string;
   details?: string;
 }
 
@@ -259,15 +257,12 @@ export interface MdrRateCalculationData {
 
 export interface MdrCallResultResponse {
   success: boolean;
-  rate_calculation: {
-    headers: Record<string, unknown>;
-    original: {
-      success: boolean;
-      message: string;
-      data: MdrRateCalculationData;
-    };
-    exception: unknown;
-  };
+  // Flat, confirmed against a real call-select-carrier-result response
+  // (2026-09-12) — the old /voice/call-result endpoint this was ported from
+  // apparently wrapped this in a Laravel HTTP-client-shaped envelope
+  // ({headers, original: {success, message, data}, exception}); the new
+  // endpoint returns MdrRateCalculationData here directly, no wrapper.
+  rate_calculation: MdrRateCalculationData;
 }
 
 /**
