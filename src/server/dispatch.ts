@@ -128,12 +128,34 @@ dispatchRouter.post("/run", async (req, res) => {
   res.status(result.ok ? 200 : 500).json(result);
 });
 
-// Exported so src/server/testDispatch.ts can reuse this exact, unmodified
-// pipeline for on-demand test calls — see that file's header comment.
-export async function processLoad(load: any, results: Result[], dryRun: boolean) {
+async function processLoad(load: any, results: Result[], dryRun: boolean) {
   let carriers;
   try {
-    carriers = await Carrier.find({ load_id: load.id, stop_call: false }).sort({ rank: 1 });
+    // Attempt #1 always happens instantly, straight off the select.carrier.irs
+    // webhook (see mdrWebhook.ts) — by the time this cron loop ever runs, every
+    // eligible carrier already has that first CallAttempt. So this cycle's job
+    // isn't "find carriers to call for the first time," it's "find carriers
+    // whose first call didn't resolve anything and are still active" — hence
+    // the $lookup + exactly-one-attempt filter below, instead of a plain
+    // Carrier.find. carrier_id being unique per Carrier document is what makes
+    // matching the $lookup on outreach_id alone safe (no need to also pin
+    // loadId inside it). Pipeline-style $lookup (not localField/foreignField)
+    // because Carrier.outreach_id is a Number but CallAttempt.outreachId is a
+    // String — a plain localField/foreignField lookup does exact BSON-type
+    // matching and would silently join zero rows.
+    carriers = await Carrier.aggregate([
+      { $match: { load_id: load.id, stop_call: false } },
+      {
+        $lookup: {
+          from: "callattempts",
+          let: { outreachId: { $toString: "$outreach_id" } },
+          pipeline: [{ $match: { $expr: { $eq: ["$outreachId", "$$outreachId"] } } }],
+          as: "callAttempts",
+        },
+      },
+      { $match: { $expr: { $eq: [{ $size: "$callAttempts" }, 1] } } },
+      { $sort: { rank: 1 } },
+    ]);
   } catch (err) {
     console.error(`dispatch/run: failed to fetch carriers for load ${load.id}:`, err);
     results.push({ loadId: load.id, outcome: "error", error: `Failed to fetch carriers: ${(err as Error).message}` });
