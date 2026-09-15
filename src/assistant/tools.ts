@@ -49,7 +49,7 @@ const quoteFieldProperties = {
   base_rate: {
     type: "number",
     description:
-      "base drayage rate, PER CONTAINER — pickup to warehouse if this load needs storage, " +
+      "base drayage rate, PER CONTAINER — pickup to warehouse if this shipment needs storage, " +
       "otherwise pickup to final delivery. If the carrier only gave a combined total for all " +
       "containers, this must be that total divided by the container count, confirmed back to them " +
       "— never the raw total itself.",
@@ -65,31 +65,35 @@ const quoteFieldProperties = {
   transload_rate: {
     type: "number",
     description:
-      "only if this load needs transload. PER CONTAINER, not a combined total — if the carrier " +
+      "only if this shipment needs transload. PER CONTAINER, not a combined total — if the carrier " +
       "only gave a combined total for all containers, this must be that total divided by the " +
       "container count, confirmed back to them.",
   },
   finalmile_rate: {
     type: "number",
     description:
-      "only if this load needs final mile. PER CONTAINER, not a combined total — if the carrier " +
+      "only if this shipment needs final mile. PER CONTAINER, not a combined total — if the carrier " +
       "only gave a combined total for all containers, this must be that total divided by the " +
       "container count, confirmed back to them.",
   },
-  finalmile_fsc: { type: "number", description: "only if this load needs final mile" },
+  finalmile_fsc: { type: "number", description: "only if this shipment needs final mile" },
   // Vapi's schema validator rejects a numeric enum ([0, 1]) on a "number"
   // field — enum values must be strings. Sent as "0"/"1" and coerced back
   // to a real 0/1 server-side (see toBinaryFlag in webhookHandlers.ts).
-  is_warehouse: { type: "string", enum: ["0", "1"], description: "1 if this load needs storage, 0 otherwise" },
-  storage_rate: { type: "number", description: "only if this load needs storage" },
+  is_warehouse: { type: "string", enum: ["0", "1"], description: "1 if this shipment needs storage, 0 otherwise" },
+  storage_rate: { type: "number", description: "only if this shipment needs storage" },
   warehouse_id: {
     type: "number",
-    description: "only if this load needs storage — existing matched id or one newly registered via add_warehouse",
+    description: "only if this shipment needs storage — existing matched id or one newly registered via add_warehouse",
   },
+  // Reintroduced per client direction (2026-09-14) for this agent's
+  // confirmation flow — MDR's own field name for what's spoken as "earliest
+  // available truck date" here, not a fresh-quote driver-availability ask.
+  driver_available: { type: "string", description: "date, e.g. 2026-08-15" },
   details: { type: "string", description: "free-text notes, if any" },
 };
 
-const quoteFieldRequired = ["base_rate", "fsc", "acc_types", "is_warehouse"];
+const quoteFieldRequired = ["base_rate", "fsc", "acc_types", "is_warehouse", "driver_available"];
 
 export const TOOLS = [
   {
@@ -135,7 +139,7 @@ export const TOOLS = [
     type: "function" as const,
     function: {
       name: "log_decline",
-      description: "Log that the carrier declined to quote this load.",
+      description: "Log that the carrier declined to quote this shipment.",
       parameters: {
         type: "object",
         properties: {
@@ -182,7 +186,7 @@ export const TOOLS = [
         "pricing/dispatch contact is — see Opening in the system prompt for when this happens in " +
         "each case (known contact confirmed, a new name given for an unknown contact, or a known " +
         "contact corrected to someone new). This is what lets a future call — even for a " +
-        "different load — ask for this person by name instead of the generic role question, and " +
+        "different shipment — ask for this person by name instead of the generic role question, and " +
         "it's what updates MDR's own carrier record. Do not call this just because a name was " +
         "mentioned in passing; only when it's actually confirmed as the right contact.",
       parameters: {
@@ -231,7 +235,7 @@ export const TOOLS = [
     function: {
       name: "resend_email",
       description:
-        "Resend the load invitation email to this carrier. Call when the carrier says they never " +
+        "Resend the shipment invitation email to this carrier. Call when the carrier says they never " +
         "received it, or otherwise asks for it again. This is only the resend action itself — it " +
         "does NOT mean they've decided to quote by email; if they have, also call " +
         "confirm_email_quote (separately, since a resend can happen with no such decision made, " +

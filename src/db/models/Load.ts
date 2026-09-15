@@ -41,6 +41,18 @@ const loadSchema = new Schema(
     // (WebhookResponse 6a95592b05bf606979e3478d, 2026-08-31) — not yet
     // wired into any prompt variable or quote logic.
     fsc: String,
+    // Per-container base rate that target_rate is calculated from (e.g.
+    // base_price 2000.00 x 2 containers = 4000, x 1.08 fsc = target_rate
+    // 4320) — new fields confirmed via a real capture (WebhookResponse
+    // 6aa7d4061e26f15d4020d51e, 2026-09-14). Same "internal reference only,
+    // never disclosed to the carrier" category as target_rate/fsc (see
+    // prompt.ts's "Opening — correct contact" / callVariables.ts) — not yet
+    // wired into any prompt variable.
+    base_price: String,
+    // Unit fsc is expressed in — "%" in every capture seen so far, but kept
+    // as a real field rather than assumed, in case MDR sends a flat-amount
+    // variant for some loads.
+    fsc_type: String,
     notes: String,
     frequency_status: String,
     freight_status: String,

@@ -16,7 +16,7 @@
  * re-check after a tool call is still disabled — that belongs to the
  * orchestration-flow rebuild, not this file.
  */
-import { CallAttempt, Quote, Carrier } from "../db/models/index.js";
+import { CallAttempt, Quote, Carrier, Load } from "../db/models/index.js";
 import { applyCallOutcome, formatDurationMmSs, mapToMdrCallLogStatus } from "./callOutcome.js";
 import { MAX_CALL_ATTEMPTS } from "./cadence.js";
 import { isWithinCallingWindow, isValidTimezone, formatCallingWindow, wallClockToUtc } from "./callingWindow.js";
@@ -160,6 +160,7 @@ function parseQuoteFields(params: any) {
     is_warehouse: toBinaryFlag(params.is_warehouse, "is_warehouse"),
     storage_rate: toOptionalNumber(params.storage_rate, "storage_rate"),
     warehouse_id: toOptionalNumber(params.warehouse_id, "warehouse_id"),
+    driver_available: String(params.driver_available ?? ""),
     details: params.details ? String(params.details) : undefined,
   };
 }
@@ -183,6 +184,7 @@ function buildLocalQuoteFields(fields: ParsedQuoteFields) {
     isWarehouse: fields.is_warehouse,
     storageRate: fields.storage_rate,
     warehouseId: fields.warehouse_id,
+    driverAvailable: fields.driver_available,
     details: fields.details,
   };
 }
@@ -279,6 +281,19 @@ async function submitQuote(params: any, { attempt }: CallContext) {
     console.error(`submit_quote: failed to update local Carrier.stop_call for ${attempt.outreachId}:`, err);
   }
 
+  // This flow guarantees exactly one carrier per load (see mdrWebhook.ts's
+  // header comment) — once that carrier has quoted, this load has no other
+  // carrier left to call, so it's locally done too. Purely a local-cache
+  // convenience for runDispatchCycle's `Load.find({ is_load_close: false })`
+  // batch scan (see dispatch.ts) — never authoritative: the instant webhook
+  // path always re-checks MDR's own fresh is_load_close before ever
+  // deciding anything, so a stale value here can't block a real future call.
+  try {
+    await Load.updateOne({ id: Number(attempt.loadId) }, { is_load_close: true });
+  } catch (err) {
+    console.error(`submit_quote: failed to update local Load.is_load_close for ${attempt.loadId}:`, err);
+  }
+
   return { ok: true, mdrSync: "ok", quoteId: localQuote.id };
 }
 
@@ -359,6 +374,16 @@ async function logDecline(params: any, { attempt }: CallContext) {
     console.error(`log_decline: failed to update local Carrier.stop_call for ${attempt.outreachId}:`, err);
   }
 
+  // Same reasoning as submit_quote above — this flow guarantees exactly one
+  // carrier per load, so a decline from that carrier leaves nothing else to
+  // call for this load either. Local-cache only, not authoritative — see
+  // submit_quote's comment above.
+  try {
+    await Load.updateOne({ id: Number(attempt.loadId) }, { is_load_close: true });
+  } catch (err) {
+    console.error(`log_decline: failed to update local Load.is_load_close for ${attempt.loadId}:`, err);
+  }
+
   return { ok: true, mdrSync };
 }
 
@@ -423,6 +448,16 @@ async function recordDoNotCall(_params: any, { attempt }: CallContext) {
     await Carrier.updateOne({ outreach_id: Number(attempt.outreachId) }, { stop_call: true, stop_reason: reasonText });
   } catch (err) {
     console.error(`record_do_not_call: failed to update local Carrier.stop_call for ${attempt.outreachId}:`, err);
+  }
+
+  // Same reasoning as submit_quote above — this flow guarantees exactly one
+  // carrier per load, so an opt-out from that carrier leaves nothing else to
+  // call for this load either. Local-cache only, not authoritative — see
+  // submit_quote's comment above.
+  try {
+    await Load.updateOne({ id: Number(attempt.loadId) }, { is_load_close: true });
+  } catch (err) {
+    console.error(`record_do_not_call: failed to update local Load.is_load_close for ${attempt.loadId}:`, err);
   }
 
   return { ok: true, mdrSync };

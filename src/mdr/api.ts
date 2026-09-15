@@ -239,6 +239,11 @@ export interface MdrCallResultRequest {
   is_warehouse: 0 | 1;
   storage_rate?: number;
   warehouse_id?: number;
+  // Reintroduced per client direction (2026-09-14) — this agent's
+  // confirmation flow asks for an "earliest available truck date" (see
+  // prompt.ts's Drayage pricing capture), sent to MDR under the same field
+  // name the classic bid-follow-up flow used for driver availability.
+  driver_available: string;
   details?: string;
 }
 

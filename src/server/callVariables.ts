@@ -135,12 +135,12 @@ function renderServiceTypeSummary(params: {
   storageDays: string;
   storagePallets: string;
 }): string {
-  const base = `This is a ${params.serviceScope} load.`;
+  const base = `This is a ${params.serviceScope} shipment.`;
   if (params.transloadNeeded !== "yes") return base;
 
   const parts = ["Transloading"];
   if (params.finalMileNeeded === "yes") parts.push("Final Mile delivery");
-  let detail = `This load requires ${parts.join(", and ")}`;
+  let detail = `This shipment requires ${parts.join(", and ")}`;
   if (params.storageNeeded === "yes") {
     detail += `, with storage for ${params.storageDays} days, ${params.storagePallets} pallets`;
   }
@@ -200,7 +200,7 @@ export function buildCallVariables(
   // schedule_callback final-attempt rule that reads it — computed by
   // dispatch.ts from nextAttemptNumber === MAX_CALL_ATTEMPTS.
   const attemptStatus = isFinalAttempt
-    ? "This is the final allowed call to this carrier for this load — no further automated attempts will happen after this one."
+    ? "This is the final allowed call to this carrier for this shipment — no further automated attempts will happen after this one."
     : "This is not the final allowed attempt — further automated attempts remain if needed.";
 
   // Four independent gates, per client clarification — do not conflate
@@ -266,6 +266,21 @@ export function buildCallVariables(
     carrierEmail: fallback(carrier.email),
     // No confirmed source for a real callback DID/number yet.
     callbackNumber: "TBD",
+
+    // The broker/shipper who awarded this carrier the shipment — stated to
+    // the carrier by name in the Opening reaction line ("{{customerName}}
+    // has awarded your company..."), per client direction (2026-09-14): this
+    // agent confirms an already-selected, already-priced shipment, not a
+    // fresh bid, so naming who awarded it and what MDR's price is comes
+    // right up front instead of being withheld.
+    customerName: fallback(load.customer_name),
+    // MDR's own already-decided per-container rate for this shipment (see
+    // Load.ts's header comment on base_price/target_rate/fsc) — actively
+    // disclosed here, unlike targetRate/fsc in the old bid-follow-up flow:
+    // this isn't a hidden negotiating benchmark, it's the specific rate MDR
+    // wants the carrier to confirm or counter.
+    basePrice: formatNumber(load.base_price),
+    fsc: fallback(load.fsc),
 
     quoteId: fallback(load.quote_id),
     loadId: fallback(load.id),

@@ -34,6 +34,11 @@ const quoteSchema = new Schema(
     isWarehouse: Number, // 0 or 1, matches MDR's own representation
     storageRate: Number,
     warehouseId: Number,
+    // Reintroduced per client direction (2026-09-14) — "earliest available
+    // truck date" in this agent's confirmation flow (see prompt.ts's
+    // Drayage pricing capture); same underlying MDR field as the classic
+    // flow's driver-availability ask.
+    driverAvailable: String,
     details: String,
     allIn: Number, // 0 or 1 — derived from whether accTypes is empty, not asked
 
