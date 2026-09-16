@@ -17,6 +17,33 @@ export class TwilioApiError extends Error {
   }
 }
 
+/**
+ * fetch() wraps the real network-level failure (DNS lookup failure,
+ * connection refused/reset, TLS failure, connect timeout, ...) in the
+ * thrown error's `.cause` — the error's own `.message` is just the generic
+ * "fetch failed", identical for every one of those distinct causes. See
+ * src/mdr/client.ts's identical helper for the real incident (2026-09-16,
+ * sibling Carrier-Representative-Agent project) that motivated capturing
+ * this instead of discarding it.
+ */
+function describeCause(cause: unknown): string | undefined {
+  if (cause === undefined || cause === null) return undefined;
+  if (cause instanceof AggregateError && cause.errors.length > 0) {
+    return cause.errors.map((e) => describeCause(e) ?? String(e)).join("; ");
+  }
+  if (cause instanceof Error) {
+    const code = (cause as NodeJS.ErrnoException).code;
+    return code ? `${code}: ${cause.message}` : cause.message;
+  }
+  return String(cause);
+}
+
+/** Appends describeCause's detail as a parenthetical only when there's actually a cause to show. */
+function withCause(message: string, cause: unknown): string {
+  const detail = describeCause(cause);
+  return detail ? `${message} (${detail})` : message;
+}
+
 async function request<T>(method: "GET", path: string): Promise<T> {
   const accountSid = process.env.TWILIO_ACCOUNT_SID ?? "";
 
@@ -42,7 +69,10 @@ async function request<T>(method: "GET", path: string): Promise<T> {
     if ((err as Error).name === "AbortError") {
       throw new Error(`Twilio API request timed out after ${REQUEST_TIMEOUT_MS}ms: ${method} ${path}`);
     }
-    throw new Error(`Twilio API request failed: ${method} ${path} — ${(err as Error).message}`);
+    throw new Error(
+      withCause(`Twilio API request failed: ${method} ${path} — ${(err as Error).message}`, (err as Error).cause),
+      { cause: err }
+    );
   } finally {
     clearTimeout(timeout);
   }

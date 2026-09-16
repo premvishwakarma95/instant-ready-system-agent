@@ -119,8 +119,8 @@ async function main() {
   // enough that a due call isn't meaningfully delayed (cadence offsets and
   // the calling window are both hour-granularity), infrequent enough not to
   // hammer MDR's per-carrier lookup for no reason.
-  // await scheduledDispatchTick();
-  // cron.schedule("*/5 * * * *", scheduledDispatchTick);
+  await scheduledDispatchTick();
+  cron.schedule("*/5 * * * *", scheduledDispatchTick);
 }
 
 main().catch((err) => {

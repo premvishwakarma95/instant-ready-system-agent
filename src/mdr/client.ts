@@ -16,6 +16,39 @@ export class MdrApiError extends Error {
   }
 }
 
+/**
+ * fetch() wraps the real network-level failure (DNS lookup failure,
+ * connection refused/reset, TLS failure, connect timeout, ...) in the
+ * thrown error's `.cause` — the error's own `.message` is just the generic
+ * "fetch failed", identical for every one of those distinct causes. Every
+ * request() catch block below previously discarded `.cause` entirely when
+ * building its own error message, which made a real production incident
+ * (2026-09-16, in the sibling Carrier-Representative-Agent project —
+ * several "fetch failed" errors hitting MDR's call-final-result/carrier-
+ * lookup endpoints and Vapi's own /call endpoint) undiagnosable after the
+ * fact: nothing in the logs said whether it was DNS, a reset connection, or
+ * a timeout. Surfacing it here means the next occurrence is actually
+ * diagnosable. Ported to this agent since it shares the same production
+ * host and the same class of risk.
+ */
+function describeCause(cause: unknown): string | undefined {
+  if (cause === undefined || cause === null) return undefined;
+  if (cause instanceof AggregateError && cause.errors.length > 0) {
+    return cause.errors.map((e) => describeCause(e) ?? String(e)).join("; ");
+  }
+  if (cause instanceof Error) {
+    const code = (cause as NodeJS.ErrnoException).code;
+    return code ? `${code}: ${cause.message}` : cause.message;
+  }
+  return String(cause);
+}
+
+/** Appends describeCause's detail as a parenthetical only when there's actually a cause to show. */
+function withCause(message: string, cause: unknown): string {
+  const detail = describeCause(cause);
+  return detail ? `${message} (${detail})` : message;
+}
+
 async function request<T>(
   method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE",
   path: string,
@@ -41,7 +74,10 @@ async function request<T>(
     if ((err as Error).name === "AbortError") {
       throw new Error(`MDR API request timed out after ${REQUEST_TIMEOUT_MS}ms: ${method} ${path}`);
     }
-    throw new Error(`MDR API request failed: ${method} ${path} — ${(err as Error).message}`);
+    throw new Error(
+      withCause(`MDR API request failed: ${method} ${path} — ${(err as Error).message}`, (err as Error).cause),
+      { cause: err }
+    );
   } finally {
     clearTimeout(timeout);
   }
@@ -100,7 +136,10 @@ async function requestForm<T>(path: string, fields: Record<string, string>): Pro
     if ((err as Error).name === "AbortError") {
       throw new Error(`MDR API request timed out after ${REQUEST_TIMEOUT_MS}ms: POST ${path}`);
     }
-    throw new Error(`MDR API request failed: POST ${path} — ${(err as Error).message}`);
+    throw new Error(
+      withCause(`MDR API request failed: POST ${path} — ${(err as Error).message}`, (err as Error).cause),
+      { cause: err }
+    );
   } finally {
     clearTimeout(timeout);
   }
