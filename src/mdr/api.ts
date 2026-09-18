@@ -383,3 +383,17 @@ export interface MdrCallLogResponse {
 export function submitCallLog(payload: MdrCallLogRequest): Promise<MdrCallLogResponse> {
   return mdr.post<MdrCallLogResponse>("/voice/call-logs", payload);
 }
+
+/**
+ * Client-provided endpoint (2026-09-18) — signals that this outreach's
+ * calling effort is over with no definitive resolution: this was the final
+ * allowed attempt (see cadence.ts's MAX_CALL_ATTEMPTS) and the call-log
+ * status pushed above was neither DECLINED nor ACCEPTED. Called once, right
+ * after the call-log push, from the same end-of-call-report handler — see
+ * webhookHandlers.ts. Form-data, not JSON, per the client-supplied example.
+ */
+export function closeCall(outreachId: number): Promise<MdrActionResponse> {
+  return mdr.postForm<MdrActionResponse>("/voice/call-closed", {
+    outreach_id: String(outreachId),
+  });
+}

@@ -138,6 +138,15 @@ const callAttemptSchema = new Schema(
     // already been processed"), but that's a defense on their side, not a
     // reason to skip guarding our own retry attempt from firing at all.
     mdrCallLogSubmittedAt: Date,
+    // Set once MDR's call-closed push succeeds — a separate guard from
+    // mdrCallLogSubmittedAt above (not reused) since the two actions are
+    // independent: mdrCallLogSubmittedAt is only ever set on a successful
+    // call-log push, which never happens at all when mapToMdrCallLogStatus
+    // returns null (do_not_call/failed/wrong_number) — reusing it here would
+    // let this action re-fire on every webhook retry for exactly those
+    // outcomes, and would also stop a genuinely-failed call-closed push from
+    // ever being retried once the call-log push happened to succeed.
+    mdrCallClosedAt: Date,
   },
   { timestamps: true }
 );

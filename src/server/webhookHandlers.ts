@@ -29,6 +29,7 @@ import {
   submitCallResult as mdrSubmitCallResult,
   submitCallFinalResult as mdrSubmitCallFinalResult,
   submitCallLog as mdrSubmitCallLog,
+  closeCall as mdrCloseCall,
   updateCarrierDetail as mdrUpdateCarrierDetail,
 } from "../mdr/api.js";
 import { ORCHESTRATION_WEBHOOK_URL } from "../assistant/tools.js";
@@ -593,6 +594,11 @@ export async function handleEndOfCallReport(message: any) {
 
   await attempt.save();
 
+  // Computed once, up front, regardless of push success/failure — both
+  // mdrSubmitCallLog and mdrCloseCall below key off this same value, and
+  // it's a pure function of already-saved attempt fields (no API call).
+  const mdrCallLogStatus = mapToMdrCallLogStatus(attempt);
+
   // MDR's Call Log API (spec received 2026-08-27) — logs ended calls to
   // MDR's own system, restricted to their fixed 6-value status vocabulary
   // (see mapToMdrCallLogStatus's header comment for what's covered and
@@ -605,50 +611,79 @@ export async function handleEndOfCallReport(message: any) {
   // webhook and re-run this function for the same call.
   if (attempt.mdrCallLogSubmittedAt) {
     console.log(`end-of-call-report: call log already submitted to MDR for outreach_id ${attempt.outreachId} at ${attempt.mdrCallLogSubmittedAt.toISOString()} — skipping duplicate push`);
+  } else if (mdrCallLogStatus) {
+    try {
+      const result = await mdrSubmitCallLog({
+        outreach_id: Number(attempt.outreachId),
+        call_id: vapiCallId,
+        status: mdrCallLogStatus,
+        duration: formatDurationMmSs(attempt.durationSeconds ?? 0),
+        data: {
+          direction: "outbound",
+          started_at: message.startedAt,
+          ended_at: message.endedAt,
+          // Not attempt.recordingUrl directly — that's a private R2 path
+          // Vapi itself requires an authenticated API call to play (see
+          // recordings.ts). This points at our own proxy instead, which
+          // is actually playable.
+          recording_url: attempt.recordingUrl ? buildPlayableRecordingUrl(vapiCallId) : undefined,
+          transcript: attempt.transcript,
+          provider: "vapi",
+          call_result: attempt.callResult,
+          ended_reason: attempt.endedReason,
+          // twilio_cost is commonly null/absent here — Twilio's own price
+          // isn't reliably available by end-of-call-report time (see
+          // CallAttempt.ts's field comment). No backfill push exists yet
+          // for calls where it resolves later.
+          vapi_cost: attempt.vapiCost,
+          twilio_cost: attempt.twilioCost,
+          total_cost:
+            typeof attempt.vapiCost === "number" && typeof attempt.twilioCost === "number"
+              ? attempt.vapiCost + attempt.twilioCost
+              : undefined,
+        },
+      });
+      attempt.mdrCallLogSubmittedAt = new Date();
+      await attempt.save();
+      console.log(`end-of-call-report: submitted call log to MDR for outreach_id ${attempt.outreachId} (status=${mdrCallLogStatus}):`, result);
+    } catch (err) {
+      console.error(`end-of-call-report: failed to submit call log to MDR for outreach_id ${attempt.outreachId}:`, err);
+    }
   } else {
-    const mdrCallLogStatus = mapToMdrCallLogStatus(attempt);
-    if (mdrCallLogStatus) {
-      try {
-        const result = await mdrSubmitCallLog({
-          outreach_id: Number(attempt.outreachId),
-          call_id: vapiCallId,
-          status: mdrCallLogStatus,
-          duration: formatDurationMmSs(attempt.durationSeconds ?? 0),
-          data: {
-            direction: "outbound",
-            started_at: message.startedAt,
-            ended_at: message.endedAt,
-            // Not attempt.recordingUrl directly — that's a private R2 path
-            // Vapi itself requires an authenticated API call to play (see
-            // recordings.ts). This points at our own proxy instead, which
-            // is actually playable.
-            recording_url: attempt.recordingUrl ? buildPlayableRecordingUrl(vapiCallId) : undefined,
-            transcript: attempt.transcript,
-            provider: "vapi",
-            call_result: attempt.callResult,
-            ended_reason: attempt.endedReason,
-            // twilio_cost is commonly null/absent here — Twilio's own price
-            // isn't reliably available by end-of-call-report time (see
-            // CallAttempt.ts's field comment). No backfill push exists yet
-            // for calls where it resolves later.
-            vapi_cost: attempt.vapiCost,
-            twilio_cost: attempt.twilioCost,
-            total_cost:
-              typeof attempt.vapiCost === "number" && typeof attempt.twilioCost === "number"
-                ? attempt.vapiCost + attempt.twilioCost
-                : undefined,
-          },
-        });
-        attempt.mdrCallLogSubmittedAt = new Date();
-        await attempt.save();
-        console.log(`end-of-call-report: submitted call log to MDR for outreach_id ${attempt.outreachId} (status=${mdrCallLogStatus}):`, result);
-      } catch (err) {
-        console.error(`end-of-call-report: failed to submit call log to MDR for outreach_id ${attempt.outreachId}:`, err);
-      }
+    console.log(
+      `end-of-call-report: no MDR call-log status equivalent for outreach_id ${attempt.outreachId} (status=${attempt.status}, callResult=${attempt.callResult}) — skipping call-log push`
+    );
+  }
+
+  // Client-provided endpoint (2026-09-18) — whenever this was the final
+  // allowed attempt and the outcome was neither a decline nor an accepted
+  // quote: no more attempts remain and there's still no definitive
+  // resolution, so MDR needs to know this outreach effort is closed out
+  // rather than left silently hanging (see cadence.ts's MAX_CALL_ATTEMPTS).
+  // Guarded by its own mdrCallClosedAt field, deliberately independent of
+  // mdrCallLogSubmittedAt above — see that field's comment in CallAttempt.ts
+  // for why reusing the call-log guard here would be wrong (it's never set
+  // at all when mdrCallLogStatus is null, and this condition is reachable
+  // precisely when it's null).
+  if (
+    attempt.attemptNumber === MAX_CALL_ATTEMPTS &&
+    mdrCallLogStatus !== "DECLINED" &&
+    mdrCallLogStatus !== "ACCEPTED"
+  ) {
+    if (attempt.mdrCallClosedAt) {
+      console.log(`end-of-call-report: call already closed with MDR for outreach_id ${attempt.outreachId} at ${attempt.mdrCallClosedAt.toISOString()} — skipping duplicate push`);
     } else {
-      console.log(
-        `end-of-call-report: no MDR call-log status equivalent for outreach_id ${attempt.outreachId} (status=${attempt.status}, callResult=${attempt.callResult}) — skipping call-log push`
-      );
+      try {
+        const result = await mdrCloseCall(Number(attempt.outreachId));
+        attempt.mdrCallClosedAt = new Date();
+        await attempt.save();
+        console.log(
+          `end-of-call-report: closed call for outreach_id ${attempt.outreachId} after final attempt with no resolution (call-log status=${mdrCallLogStatus ?? "none"}):`,
+          result
+        );
+      } catch (err) {
+        console.error(`end-of-call-report: failed to close call for outreach_id ${attempt.outreachId}:`, err);
+      }
     }
   }
 
@@ -672,6 +707,19 @@ export async function handleEndOfCallReport(message: any) {
       );
     } catch (err) {
       console.error(`end-of-call-report: failed to update local Carrier.stop_call for ${attempt.outreachId}:`, err);
+    }
+
+    // Same reasoning as submit_quote/log_decline/record_do_not_call in this
+    // file — this flow guarantees exactly one carrier per load, so running
+    // out of attempts on that carrier leaves nothing else to call for this
+    // load either. Local-cache only, not authoritative — the instant
+    // webhook path always re-checks MDR's own fresh is_load_close before
+    // ever deciding anything, so a stale value here can't block a real
+    // future call if MDR reassigns this load to a new carrier.
+    try {
+      await Load.updateOne({ id: Number(attempt.loadId) }, { is_load_close: true });
+    } catch (err) {
+      console.error(`end-of-call-report: failed to update local Load.is_load_close for ${attempt.loadId}:`, err);
     }
   }
 }
