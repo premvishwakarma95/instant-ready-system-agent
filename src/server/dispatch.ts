@@ -136,13 +136,25 @@ async function processLoad(load: any, results: Result[], dryRun: boolean) {
     // eligible carrier already has that first CallAttempt. So this cycle's job
     // isn't "find carriers to call for the first time," it's "find carriers
     // whose first call didn't resolve anything and are still active" — hence
-    // the $lookup + exactly-one-attempt filter below, instead of a plain
-    // Carrier.find. carrier_id being unique per Carrier document is what makes
-    // matching the $lookup on outreach_id alone safe (no need to also pin
-    // loadId inside it). Pipeline-style $lookup (not localField/foreignField)
-    // because Carrier.outreach_id is a Number but CallAttempt.outreachId is a
-    // String — a plain localField/foreignField lookup does exact BSON-type
-    // matching and would silently join zero rows.
+    // the $lookup + at-least-one-attempt filter below, instead of a plain
+    // Carrier.find. This is a floor, not an exact match: a carrier who's had
+    // 1, 2, or 3 attempts and is still active is equally eligible for a
+    // follow-up here — cadence.ts/processCarrier below is what actually
+    // decides whether the NEXT attempt (2, 3, or 4) is due right now, this
+    // aggregation's only job is "has had a first attempt at all" (excluding
+    // brand-new carriers the instant webhook path hasn't reached yet, which
+    // have zero attempts and would otherwise get double-dialed here). A
+    // real gap (2026-09-18): this was previously $eq: 1, which only ever
+    // caught the attempt-1-to-2 transition and then permanently excluded
+    // that carrier from every future cron cycle — attempts 3 and 4 could
+    // then only ever be placed by manually re-hitting the instant webhook,
+    // never by cron, however overdue they were. carrier_id being unique per
+    // Carrier document is what makes matching the $lookup on outreach_id
+    // alone safe (no need to also pin loadId inside it). Pipeline-style
+    // $lookup (not localField/foreignField) because Carrier.outreach_id is a
+    // Number but CallAttempt.outreachId is a String — a plain
+    // localField/foreignField lookup does exact BSON-type matching and
+    // would silently join zero rows.
     carriers = await Carrier.aggregate([
       { $match: { load_id: load.id, stop_call: false } },
       {
@@ -153,7 +165,7 @@ async function processLoad(load: any, results: Result[], dryRun: boolean) {
           as: "callAttempts",
         },
       },
-      { $match: { $expr: { $eq: [{ $size: "$callAttempts" }, 1] } } },
+      { $match: { $expr: { $gte: [{ $size: "$callAttempts" }, 1] } } },
       { $sort: { rank: 1 } },
     ]);
   } catch (err) {
