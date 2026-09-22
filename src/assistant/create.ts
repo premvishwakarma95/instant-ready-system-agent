@@ -89,9 +89,12 @@ import { TOOLS, ORCHESTRATION_WEBHOOK_URL } from "./tools.js";
 // well past a normal pause (checking a rate, etc.).
 const assistantPayload = {
   // Dashboard label only — distinguishes this from the Carrier-Representative-
-  // Agent's own "Everly" assistant in the same Vapi account. Not spoken on
-  // calls; the persona's spoken name still comes from prompt.ts.
-  name: "Everly-(IRS)",
+  // Agent's own "Everly" assistant in the same Vapi account, and (via
+  // AGENT_NAME) from one another once staging/production are split into two
+  // separate assistants — see the sibling project's identical pattern in its
+  // own create.ts. Not spoken on calls; the persona's spoken name still comes
+  // from prompt.ts.
+  name: process.env.AGENT_NAME ?? "Everly-(IRS)",
   firstMessage: "",
   firstMessageMode: "assistant-waits-for-user",
   silenceTimeoutSeconds: 60,
