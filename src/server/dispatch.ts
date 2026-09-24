@@ -13,8 +13,8 @@
  *
  * processCarrier (below) has two callers, both exercising the exact same
  * checks:
- *   - processLoad, from this file's own POST /dispatch/run route (or the
- *     — currently disabled — cron), looping every open Load's every
+ *   - processLoad, from this file's own POST /dispatch/run route or the
+ *     cron scheduler in server/index.ts, looping every open Load's every
  *     not-stopped Carrier.
  *   - mdrWebhook.ts's POST /webhooks/mdr/capture route, calling it directly
  *     for the single (load, carrier) pair a select.carrier.irs webhook just
@@ -29,10 +29,12 @@
  *      b. fresh.carrier.stop_call === true → skip just this carrier.
  *      c. Otherwise → compute which attempt number is next (from existing
  *         CallAttempt records) and whether it's actually due yet, per the
- *         confirmed cadence and calling window. If due: create the
- *         CallAttempt (idempotent via the loadId+carrierId+attemptNumber
- *         unique index — a duplicate-key error means another run already
- *         claimed this slot, not a real failure) and dial via Vapi.
+ *         confirmed cadence. Attempt 1 is never gated by the calling window
+ *         (see cadence.ts's header comment) — attempts 2 and 3 still are.
+ *         If due: create the CallAttempt (idempotent via the
+ *         loadId+outreachId+attemptNumber unique index — a duplicate-key
+ *         error means another run already claimed this slot, not a real
+ *         failure) and dial via Vapi.
  */
 import { Router } from "express";
 import { Load, Carrier, CallAttempt } from "../db/models/index.js";
@@ -341,21 +343,29 @@ export async function processCarrier(load: any, carrier: any, results: Result[],
   }
 
   let scheduledFor;
+  // A carrier who agreed to a specific callback time (schedule_callback)
+  // overrides the normal cadence math entirely for the next attempt: call
+  // then, not at a computed 30min/1hr/2hr/next-business-morning offset —
+  // and, per the calling-window check below, unchecked against the window
+  // too. webhookHandlers.ts's scheduleCallback no longer validates this
+  // time against the window either (removed 2026-09-24, per explicit
+  // instruction, ported from the sibling Carrier-Representative-Agent repo)
+  // — the carrier naming their own availability is treated as pre-approved,
+  // end to end.
+  let isCallbackDriven = false;
   try {
     const lastAttempt = existingAttempts[existingAttempts.length - 1];
-    // A carrier who agreed to a specific callback time (schedule_callback,
-    // already validated against the calling window when it was captured —
-    // see webhookHandlers.ts) overrides the normal cadence math entirely for
-    // the next attempt: call then, not at a computed 30min/1hr/2hr/next-
-    // business-morning offset.
-    scheduledFor = lastAttempt?.callbackAt
-      ? lastAttempt.callbackAt
-      : computeAttemptSchedule({
-          attemptNumber: nextAttemptNumber,
-          timezone: fresh.carrier.carrier_timezone,
-          emailSentAt,
-          previousAttemptAt: lastAttempt?.startedAt ?? lastAttempt?.createdAt,
-        });
+    if (lastAttempt?.callbackAt) {
+      scheduledFor = lastAttempt.callbackAt;
+      isCallbackDriven = true;
+    } else {
+      scheduledFor = computeAttemptSchedule({
+        attemptNumber: nextAttemptNumber,
+        timezone: fresh.carrier.carrier_timezone,
+        emailSentAt,
+        previousAttemptAt: lastAttempt?.startedAt ?? lastAttempt?.createdAt,
+      });
+    }
   } catch (err) {
     console.error(
       `dispatch/run: failed to compute attempt schedule (load ${load.id}, outreach_id ${carrier.outreach_id}, attempt ${nextAttemptNumber}):`,
@@ -383,7 +393,14 @@ export async function processCarrier(load: any, carrier: any, results: Result[],
     return false;
   }
 
-  if (!isWithinCallingWindow(fresh.carrier.carrier_timezone, now)) {
+  // Skipped for a callback-driven attempt — the carrier named this exact time
+  // themselves (see scheduledFor above and webhookHandlers.ts's
+  // scheduleCallback), so it's never re-gated by the window here — and
+  // skipped for attempt 1, which is deliberately never gated by the calling
+  // window at all (see cadence.ts's computeAttemptSchedule header comment).
+  // Attempts 2 and 3 (cadence-computed) still go through this check as
+  // normal.
+  if (!isCallbackDriven && nextAttemptNumber !== 1 && !isWithinCallingWindow(fresh.carrier.carrier_timezone, now)) {
     results.push({
       loadId: load.id,
       outreachId: carrier.outreach_id,

@@ -922,11 +922,7 @@ whether anything actually happened.
   Once you have the result: if it came back ok, confirm the time to the carrier, give a brief
   sign-off, and call endCall in that same turn — do not wait for the carrier to speak again or hang
   up first; a confirmed callback is a completed outcome, the same as a submitted quote, and closes
-  the call the same way. If it came back
-  with error "outside_calling_window", this is not a system failure — it means the proposed time
-  is outside our calling hours. Relay the message's stated window to the carrier in your own
-  words, ask for a different time within it, and call schedule_callback again once they give you
-  one. Never tell the carrier a time was booked unless the result came back ok.
+  the call the same way. Never tell the carrier a time was booked unless the result came back ok.
   Final-attempt exception — check Attempt status above: if this is the final allowed attempt, do
   not offer or arrange a future callback for reasons like the carrier being unavailable right now
   (busy, driving, a language barrier, "we need more information" while waiting on an answer, or
@@ -969,7 +965,5 @@ If any tool call's result indicates an error or failure, do not tell the carrier
 never say "I am submitting your quote now" after a submit_quote call that actually failed). Try the
 same tool call once more; if it fails again, say there is a system issue, that their quote/decline
 was captured on this call and will be entered manually, and use schedule_callback so a human
-confirms it was recorded — never let a failed tool call look successful to the carrier. This does
-not apply to schedule_callback's "outside_calling_window" result — that is an expected rejection,
-handled per the schedule_callback rule above, not a system failure.
+confirms it was recorded — never let a failed tool call look successful to the carrier.
 `.trim();

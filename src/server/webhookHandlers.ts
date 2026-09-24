@@ -19,7 +19,7 @@
 import { CallAttempt, Quote, Carrier, Load } from "../db/models/index.js";
 import { applyCallOutcome, formatDurationMmSs, mapToMdrCallLogStatus } from "./callOutcome.js";
 import { MAX_CALL_ATTEMPTS } from "./cadence.js";
-import { isWithinCallingWindow, isValidTimezone, formatCallingWindow, wallClockToUtc } from "./callingWindow.js";
+import { isValidTimezone, wallClockToUtc } from "./callingWindow.js";
 import {
   declineCarrier as mdrDeclineCarrier,
   stopCarrier as mdrStopCarrier,
@@ -407,16 +407,14 @@ async function scheduleCallback(params: any, { attempt }: CallContext) {
     throw new Error(`Invalid callbackDateTime: ${JSON.stringify(params.callbackDateTime)}`);
   }
 
-  if (hasValidTimezone && !isWithinCallingWindow(attempt.timezone, proposed)) {
-    return {
-      ok: false,
-      error: "outside_calling_window",
-      message:
-        `That time is outside our calling window. We're able to call ${formatCallingWindow()}. ` +
-        "Please ask for a different time within that window, then call schedule_callback again.",
-    };
-  }
-
+  // Deliberately NOT gated by isWithinCallingWindow (removed 2026-09-24, per
+  // explicit instruction — ported from the sibling Carrier-Representative-
+  // Agent repo, same reasoning) — the carrier is the one naming this time,
+  // which is a stronger signal than our default calling-window policy exists
+  // to protect: never tell them it's outside our hours or ask for a
+  // different time, just accept whatever they said. dispatch.ts's matching
+  // change (see its scheduledFor comment) is what actually dials at this
+  // exact time later, unchecked.
   attempt.callResult = "callback";
   attempt.callbackAt = proposed;
   attempt.callbackTimeZone = params.carrierTimeZone;

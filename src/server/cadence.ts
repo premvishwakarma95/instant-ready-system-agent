@@ -1,14 +1,19 @@
 /**
  * Confirmed attempt cadence:
- *   1st call: as soon as the carrier is known to us (next calling-window
- *     open) — no added wait past that. Removed the earlier 30-minutes-after-
- *     email_sent_at gate (2026-08-20): MDR's integration is push-based — it
- *     only hits our webhook once a load is genuinely ready for outreach
+ *   1st call: immediately, right now — not gated by the calling window at all
+ *     (2026-09-24, explicit instruction). MDR's integration is push-based —
+ *     it only hits our webhook once a load is genuinely ready for outreach
  *     calling, so MDR itself has already decided the timing is right by the
- *     time we see the carrier at all. A further wait on our side after that
- *     would just needlessly delay the first call past what MDR intended.
- *   2nd call: 1 hour after the 1st
- *   3rd call: 2 hours after the 2nd
+ *     time we see the carrier at all. Also closes a real gap: attempt 1 is
+ *     only ever placed synchronously from the webhook itself (mdrWebhook.ts),
+ *     a one-shot call — dispatch.ts's own cron catch-up loop (processLoad)
+ *     deliberately only considers carriers with at least one existing
+ *     attempt, so a first attempt deferred to a later window-open would leave
+ *     that carrier permanently stuck at zero attempts with nothing left to
+ *     retry it. Removed the earlier 30-minutes-after-email_sent_at gate
+ *     (2026-08-20) for the same "MDR already decided the timing" reasoning.
+ *   2nd call: 1 hour after the 1st, still gated by the calling window
+ *   3rd call: 2 hours after the 2nd, still gated by the calling window
  *   4th call: next business morning (only if stop conditions still not met)
  * Max 4 attempts per carrier.
  */
@@ -33,7 +38,7 @@ export function computeAttemptSchedule(params: {
   const { attemptNumber, timezone, previousAttemptAt } = params;
 
   if (attemptNumber === 1) {
-    return nextCallingWindowOpen(timezone);
+    return new Date();
   }
 
   if (!previousAttemptAt) {

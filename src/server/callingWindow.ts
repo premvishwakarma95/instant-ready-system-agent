@@ -194,41 +194,89 @@ export function isWithinCallingWindow(timezone: string, at: Date = new Date()): 
   return hour >= CALLING_WINDOW_START_HOUR && hour < CALLING_WINDOW_END_HOUR;
 }
 
+/** `at`'s year/month/day as seen in `timezone` — the calendar-day half of localParts. */
+function localDateParts(at: Date, timezone: string) {
+  const formatter = new Intl.DateTimeFormat("en-US", { timeZone: timezone, year: "numeric", month: "2-digit", day: "2-digit" });
+  const parts = formatter.formatToParts(at);
+  const get = (type: string) => parts.find((p) => p.type === type)?.value ?? "";
+  return { year: Number(get("year")), month: Number(get("month")), day: Number(get("day")) };
+}
+
+/**
+ * The UTC instant corresponding to `hour:minute` wall-clock time, on the
+ * same local calendar day `at` falls on in `timezone`. Same construction
+ * technique as wallClockToUtc (naive UTC components, then corrected by the
+ * zone's real offset at that instant) — used to land exactly on a clean
+ * HH:00 boundary instead of drifting by whatever minute the search started
+ * from.
+ */
+function localTimeOnSameDayAsUtc(at: Date, timezone: string, hour: number, minute: number): Date {
+  const { year, month, day } = localDateParts(at, timezone);
+  const naiveUtc = Date.UTC(year, month - 1, day, hour, minute, 0);
+  const offsetMinutes = offsetMinutesForZone(timezone, new Date(naiveUtc));
+  return new Date(naiveUtc - offsetMinutes * 60_000);
+}
+
 /**
  * Returns the next moment (UTC Date) at which the calling window opens for
  * this timezone, starting from `from`. If already within the window,
- * returns `from`.
+ * returns `from` unchanged (the remaining wait, if any, still applies).
+ * Otherwise snaps straight to the next eligible day's exact window-open
+ * instant (CALLING_WINDOW_START_HOUR:00 local) — today if `from` is simply
+ * before today's window opens, the next business day otherwise. Once the
+ * window is closed, whatever cadence wait already elapsed is considered
+ * fully served; the call is due right when the window opens, not at
+ * window-open-time-plus-whatever-minute `from` happened to carry (the
+ * earlier 30-minutes-at-a-time walk from `from` used to inherit that
+ * leftover minute — confirmed wrong via live testing 2026-09-24, in the
+ * sibling Carrier-Representative-Agent repo this fix was ported from: a
+ * 4:40 PM Monday attempt landed at 8:10/8:17 AM Tuesday instead of a clean
+ * 8:00). Walking day-by-day (not the old 30-min-step search) is what makes
+ * this snap-to-HH:00 behavior possible — each candidate day is checked only
+ * for "is this a business day with any window left today", and the actual
+ * return value is always freshly constructed at hour:00, never carried
+ * forward from a stepped timestamp.
  */
 export function nextCallingWindowOpen(timezone: string, from: Date = new Date()): Date {
   if (isWithinCallingWindow(timezone, from)) return from;
 
-  // Walk forward 30 minutes at a time (bounded) until inside the window.
-  // Simple and correct across DST transitions; cheap enough at this volume.
-  const candidate = new Date(from);
-  for (let i = 0; i < 24 * 8; i++) {
-    candidate.setUTCMinutes(candidate.getUTCMinutes() + 30);
-    if (isWithinCallingWindow(timezone, candidate)) {
-      return candidate;
+  let candidate = new Date(from);
+  for (let i = 0; i < 8; i++) {
+    const { weekday, hour } = localParts(candidate, timezone);
+    // The "has today's window already closed" check only makes sense for
+    // `from`'s own day (i === 0) — advancing by a fixed 24h lands on the
+    // same local hour every subsequent day, so re-checking `hour` for i > 0
+    // would compare that SAME already-past hour forever and never find a
+    // day (confirmed by hitting the throw below in testing). Every day
+    // after the first is obviously still fully open, since the return value
+    // is always a freshly built START_HOUR:00 on it, never the candidate's
+    // own carried-over hour.
+    const todayWindowAlreadyClosed = i === 0 && hour >= CALLING_WINDOW_END_HOUR;
+    if (BUSINESS_DAYS.has(weekday) && !todayWindowAlreadyClosed) {
+      return localTimeOnSameDayAsUtc(candidate, timezone, CALLING_WINDOW_START_HOUR, 0);
     }
+    candidate = new Date(candidate.getTime() + 24 * 60 * 60_000);
   }
   throw new Error(`Could not find a calling window opening for timezone ${timezone}`);
 }
 
-/** Next business-day morning (start of the window), used for cadence attempt #4. */
+/**
+ * Next business-day morning (start of the window) — strictly a later
+ * calendar day than `from`, used for cadence attempt #4, which is meant to
+ * give a carrier a full day's rest after 3 same-day attempts regardless of
+ * how wide the calling window is configured (with a 24-hour window,
+ * `nextCallingWindowOpen(timezone, from)` alone would just return `from`
+ * itself, since "always open" trivially includes right now — this function
+ * exists specifically to skip that and force the next day).
+ */
 export function nextBusinessMorning(timezone: string, from: Date = new Date()): Date {
-  const candidate = new Date(from);
-  candidate.setUTCDate(candidate.getUTCDate() + 1);
-
+  let candidate = new Date(from.getTime() + 24 * 60 * 60_000);
   for (let i = 0; i < 8; i++) {
-    const { weekday, hour } = localParts(candidate, timezone);
+    const { weekday } = localParts(candidate, timezone);
     if (BUSINESS_DAYS.has(weekday)) {
-      // Roll back by the candidate's own local hour (+1 buffer) so we land
-      // safely before the window's start hour local, then walk forward to
-      // find the window opening.
-      candidate.setUTCHours(candidate.getUTCHours() - hour - 1);
-      return nextCallingWindowOpen(timezone, candidate);
+      return localTimeOnSameDayAsUtc(candidate, timezone, CALLING_WINDOW_START_HOUR, 0);
     }
-    candidate.setUTCDate(candidate.getUTCDate() + 1);
+    candidate = new Date(candidate.getTime() + 24 * 60 * 60_000);
   }
   throw new Error(`Could not find next business morning for timezone ${timezone}`);
 }
